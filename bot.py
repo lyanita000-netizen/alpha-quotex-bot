@@ -14,6 +14,7 @@ from telegram.ext import Application, ContextTypes
 BOT_TOKEN = "9132434770:AAGulVo-sWXI6Mm_59yVQPXXraoAn-nOTRs"
 CHANNEL_ID = -1003938306672
 AFFILIATE_LINK = "https://broker-qx.pro/sign-up/?lid=2438595"
+RENDER_SERVICE_URL = "https://alpha-quotex-bot.onrender.com"
 
 # جميع أزواج العملات المدعومة (الأساس : المقابل)
 PAIRS_LIST = [
@@ -50,10 +51,11 @@ PAIRS_LIST = [
 SCAN_INTERVAL_SECONDS = 60         # جمع الأسعار وفحص السوق تلقائياً كل دقيقة
 TRADE_DURATION_MINUTES = 5         # مدة الشمعة / الصفقة (M5)
 MAX_MARTINGALE_STEPS = 3           # أقصى عدد لمحاولات التعويض (winn1, winn2, winn3)
-SIGNAL_COOLDOWN_MINUTES = 20       # انتظار 20 دقيقة قبل تكرار صفقة نفس الزوج
-ANALYSIS_COOLDOWN_MINUTES = 25     # الحد الأدنى بين تحليلات نفس الزوج
+SIGNAL_COOLDOWN_MINUTES = 15       # انتظار 15 دقيقة قبل تكرار صفقة نفس الزوج
+ANALYSIS_COOLDOWN_MINUTES = 15     # الحد الأدنى بين تحليلات نفس الزوج
 NEWS_INTERVAL_SECONDS = 1800       # نشر أخبار السوق والمتداولين كل 30 دقيقة
-MIN_HISTORY_POINTS = 22            # عدد نقاط السعر المطلوبة لحساب المؤشرات
+KEEP_ALIVE_INTERVAL_SECONDS = 480  # تنشيط رابط الخدمة كل 8 دقائق لتقليل الخمول
+MIN_HISTORY_POINTS = 10            # عدد نقاط السعر المطلوبة للبدء السريع
 
 MARKET_AND_TRADERS_NEWS = [
     (
@@ -107,6 +109,13 @@ def start_web_server():
     server.serve_forever()
 
 
+def ping_self():
+    try:
+        requests.get(RENDER_SERVICE_URL, timeout=15)
+    except Exception as e:
+        logger.debug("تنشيط الخدمة الذاتي: %s", e)
+
+
 def fetch_rates_snapshot() -> dict[str, float]:
     rates_out: dict[str, float] = {}
     try:
@@ -137,17 +146,17 @@ def compute_indicators(prices: list[float]) -> dict | None:
     ema21 = close.ewm(span=21, adjust=False).mean()
 
     delta = close.diff()
-    gain = delta.clip(lower=0).rolling(window=14).mean()
-    loss = (-delta.clip(upper=0)).rolling(window=14).mean()
+    gain = delta.clip(lower=0).rolling(window=7, min_periods=1).mean()
+    loss = (-delta.clip(upper=0)).rolling(window=7, min_periods=1).mean()
     rs = gain / loss.replace(0, float("nan"))
     rsi = 100 - (100 / (1 + rs))
 
     curr_price = float(close.iloc[-1])
-    prev_price = float(close.iloc[-2])
+    prev_price = float(close.iloc[-2]) if len(close) >= 2 else curr_price
     curr_ema9 = float(ema9.iloc[-1])
     curr_ema21 = float(ema21.iloc[-1])
-    prev_ema9 = float(ema9.iloc[-2])
-    prev_ema21 = float(ema21.iloc[-2])
+    prev_ema9 = float(ema9.iloc[-2]) if len(ema9) >= 2 else curr_ema9
+    prev_ema21 = float(ema21.iloc[-2]) if len(ema21) >= 2 else curr_ema21
     curr_rsi = float(rsi.iloc[-1]) if pd.notna(rsi.iloc[-1]) else 50.0
 
     return {
@@ -180,13 +189,9 @@ def analyze_trade_signal(pair_name: str, prices: list[float]) -> dict | None:
     curr_price = ind["price"]
     curr_ema9 = ind["ema9"]
     curr_ema21 = ind["ema21"]
-    prev_ema9 = ind["prev_ema9"]
-    prev_ema21 = ind["prev_ema21"]
     curr_rsi = ind["rsi"]
 
-    if (prev_ema9 <= prev_ema21 and curr_ema9 > curr_ema21 and curr_rsi >= 45) or (
-        curr_ema9 > curr_ema21 and curr_price > curr_ema9 and 45 <= curr_rsi <= 75
-    ):
+    if curr_ema9 >= curr_ema21 or curr_price >= curr_ema21:
         forecast = min(96.0, round(72.0 + max(0.0, curr_rsi - 42) * 0.75, 2))
         return {
             "direction": "call",
@@ -197,20 +202,15 @@ def analyze_trade_signal(pair_name: str, prices: list[float]) -> dict | None:
             "description": build_description(pair_name, "Buy", curr_rsi, True),
         }
 
-    if (prev_ema9 >= prev_ema21 and curr_ema9 < curr_ema21 and curr_rsi <= 55) or (
-        curr_ema9 < curr_ema21 and curr_price < curr_ema9 and 25 <= curr_rsi <= 55
-    ):
-        forecast = min(96.0, round(72.0 + max(0.0, 58 - curr_rsi) * 0.75, 2))
-        return {
-            "direction": "put",
-            "arrow": "🔽",
-            "tend": "Sell",
-            "forecast": forecast,
-            "entry_price": curr_price,
-            "description": build_description(pair_name, "Sell", curr_rsi, False),
-        }
-
-    return None
+    forecast = min(96.0, round(72.0 + max(0.0, 58 - curr_rsi) * 0.75, 2))
+    return {
+        "direction": "put",
+        "arrow": "🔽",
+        "tend": "Sell",
+        "forecast": forecast,
+        "entry_price": curr_price,
+        "description": build_description(pair_name, "Sell", curr_rsi, False),
+    }
 
 
 def build_market_analysis(pair_name: str, prices: list[float]) -> str | None:
@@ -222,13 +222,9 @@ def build_market_analysis(pair_name: str, prices: list[float]) -> str | None:
     prev_price = ind["prev_price"]
     curr_ema9 = ind["ema9"]
     curr_ema21 = ind["ema21"]
-    prev_ema9 = ind["prev_ema9"]
-    prev_ema21 = ind["prev_ema21"]
     curr_rsi = ind["rsi"]
 
-    bullish = (prev_ema9 <= prev_ema21 and curr_ema9 > curr_ema21) or (
-        curr_ema9 > curr_ema21 and curr_price >= curr_ema9
-    )
+    bullish = curr_ema9 >= curr_ema21 or curr_price >= curr_ema21
     if bullish:
         arrow = "🔼"
         direction = "call"
@@ -419,6 +415,10 @@ async def post_market_news_job(context: ContextTypes.DEFAULT_TYPE):
         logger.error("تعذر نشر أخبار السوق في القناة: %s", e)
 
 
+async def keep_alive_job(context: ContextTypes.DEFAULT_TYPE):
+    await asyncio.to_thread(ping_self)
+
+
 def main():
     threading.Thread(target=start_web_server, daemon=True).start()
 
@@ -435,6 +435,11 @@ def main():
         post_market_news_job,
         interval=NEWS_INTERVAL_SECONDS,
         first=120,
+    )
+    app.job_queue.run_repeating(
+        keep_alive_job,
+        interval=KEEP_ALIVE_INTERVAL_SECONDS,
+        first=180,
     )
 
     logger.info("🤖 نظام الصفقات والتحليلات وأخبار السوق يعمل الآن تلقائياً على قناتك...")
