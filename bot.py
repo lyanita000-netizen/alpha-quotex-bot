@@ -38,7 +38,8 @@ PAIRS_LIST = [
 ]
 
 SCAN_INTERVAL_SECONDS = 60   # جمع الأسعار وفحص السوق كل دقيقة
-TRADE_DURATION_MINUTES = 5   # مدة الصفقة (M5)
+TRADE_DURATION_MINUTES = 5   # مدة الشمعة / الصفقة (M5)
+MAX_MARTINGALE_STEPS = 3     # أقصى عدد لمحاولات التعويض (winn1, winn2, winn3)
 COOLDOWN_MINUTES = 20        # انتظار 20 دقيقة قبل تكرار نفس الزوج
 MIN_HISTORY_POINTS = 25      # عدد نقاط السعر المطلوبة لحساب المؤشرات
 
@@ -144,27 +145,59 @@ async def verify_and_post_result(context: ContextTypes.DEFAULT_TYPE):
     entry_price = data["entry_price"]
     direction = data["direction"]
     message_id = data["message_id"]
+    step = data.get("step", 1)
 
     snapshot = await asyncio.to_thread(fetch_rates_snapshot)
-    exit_price = snapshot.get(pair_name)
-    if exit_price is None and price_history[pair_name]:
-        exit_price = price_history[pair_name][-1]
-    if exit_price is None:
-        return
+    current_price = snapshot.get(pair_name)
+    if current_price is None and price_history[pair_name]:
+        current_price = price_history[pair_name][-1]
+    if current_price is not None:
+        price_history[pair_name].append(current_price)
 
-    is_win = (direction == "call" and exit_price > entry_price) or (
-        direction == "put" and exit_price < entry_price
-    )
-    result_text = "WIN ✅" if is_win else "💔 Loss"
-
-    try:
-        await context.bot.send_message(
-            chat_id=CHANNEL_ID,
-            text=result_text,
-            reply_to_message_id=message_id,
+    if current_price is not None:
+        is_win = (direction == "call" and current_price > entry_price) or (
+            direction == "put" and current_price < entry_price
         )
-    except TelegramError as e:
-        logger.warning("تعذر نشر النتيجة في القناة: %s", e)
+        if is_win:
+            try:
+                await context.bot.send_message(
+                    chat_id=CHANNEL_ID,
+                    text=f"winn{step} ✅",
+                    reply_to_message_id=message_id,
+                )
+            except TelegramError as e:
+                logger.warning("تعذر نشر نتيجة الفوز في القناة: %s", e)
+            return
+
+    if step < MAX_MARTINGALE_STEPS:
+        next_step = step + 1
+        next_entry = current_price if current_price is not None else entry_price
+        context.job_queue.run_once(
+            verify_and_post_result,
+            when=TRADE_DURATION_MINUTES * 60,
+            data={
+                "pair_name": pair_name,
+                "entry_price": next_entry,
+                "direction": direction,
+                "message_id": message_id,
+                "step": next_step,
+            },
+        )
+        logger.info(
+            "لم تتحقق الصفقة في المحاولة %d لـ %s، بانتظار المحاولة %d...",
+            step,
+            pair_name,
+            next_step,
+        )
+    else:
+        try:
+            await context.bot.send_message(
+                chat_id=CHANNEL_ID,
+                text="💔 Loss",
+                reply_to_message_id=message_id,
+            )
+        except TelegramError as e:
+            logger.warning("تعذر نشر نتيجة الخسارة في القناة: %s", e)
 
 
 async def scan_market_job(context: ContextTypes.DEFAULT_TYPE):
@@ -218,6 +251,7 @@ async def scan_market_job(context: ContextTypes.DEFAULT_TYPE):
                     "entry_price": signal["entry_price"],
                     "direction": signal["direction"],
                     "message_id": sent_msg.message_id,
+                    "step": 1,
                 },
             )
             break
