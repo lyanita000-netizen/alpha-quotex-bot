@@ -51,38 +51,13 @@ PAIRS_LIST = [
 SCAN_INTERVAL_SECONDS = 60         # جمع الأسعار وفحص الصفقات تلقائياً كل دقيقة
 TRADE_DURATION_MINUTES = 5         # مدة الشمعة / الصفقة (M5)
 MAX_MARTINGALE_STEPS = 3           # أقصى عدد لمحاولات التعويض (winn1, winn2, winn3)
-SIGNAL_COOLDOWN_MINUTES = 15       # انتظار 15 دقيقة قبل تكرار صفقة نفس الزوج
-NEWS_INTERVAL_SECONDS = 1800       # نشر أخبار السوق والمتداولين كل 30 دقيقة
+SIGNAL_COOLDOWN_MINUTES = 12       # انتظار 12 دقيقة قبل تكرار صفقة نفس الزوج
 KEEP_ALIVE_INTERVAL_SECONDS = 480  # تنشيط رابط الخدمة كل 8 دقائق لتقليل الخمول
 MIN_HISTORY_POINTS = 10            # عدد نقاط السعر المطلوبة للبدء السريع
-MIN_FORECAST_PCT = 82.0            # الحد الأدنى لنسبة التوقع لقبول الصفقة الأقوى
-
-MARKET_AND_TRADERS_NEWS = [
-    (
-        "📰 أخبار السوق والمتداولين — سلوك السيولة والانضباط",
-        "يلاحظ المتداولون النشطون أن الفترات التي تشهد تذبذباً واضحاً تتطلب التزاماً صارماً بقواعد الدخول والخروج وتجنب القرارات العشوائية بعد حركة سريعة. "
-        "المتداول المنضبط يركّز على جودة الإعداد الفني وإدارة حجم الصفقة قبل أي شيء.",
-    ),
-    (
-        "📰 نبض السوق — كيف يتعامل المتداولون مع الزخم؟",
-        "عندما يتسارع السعر على أزواج العملات الرئيسية، يميل بعض المتداولين إلى مطاردة الشموع المتأخرة، بينما ينتظر المحترفون تأكيد الاتجاه والزخم. "
-        "قراءة سلوك السعر بهدوء تمنحك رؤية أوضح لحركة السوق القادمة.",
-    ),
-    (
-        "📰 أخبار المتداولين — إدارة المخاطر في أوقات التقلب",
-        "أحد أبرز الفروقات بين المتداول المبتدئ والمتداول المستمر هو الالتزام بإدارة رأس المال وتقسيم الرصيد وعدم رفع المخاطرة لتعويض حركة سابقة. "
-        "الاستمرارية في السوق تأتي من الحفاظ على رأس المال أولاً.",
-    ),
-    (
-        "📰 متابعة السوق — قراءة الاتجاه مقابل التصحيح",
-        "كثيراً ما يختلط على المتداولين الفرق بين تصحيح سعري مؤقت وبين تغير حقيقي في الاتجاه. "
-        "مراقبة المتوسطات المتحركة ومؤشر الزخم تساعد على فهم ما إذا كانت الحركة استمراراً للاتجاه أو مجرد استراحة مؤقتة للسعر.",
-    ),
-]
+MIN_FORECAST_PCT = 76.0            # الحد الأدنى لنسبة التوقع لقبول الصفقة القوية
 
 price_history: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=120))
 last_signal_time: dict[str, datetime] = {}
-news_index: int = 0
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -151,14 +126,20 @@ def compute_indicators(prices: list[float]) -> dict | None:
     rsi = 100 - (100 / (1 + rs))
 
     curr_price = float(close.iloc[-1])
+    prev_price = float(close.iloc[-2]) if len(close) >= 2 else curr_price
     curr_ema9 = float(ema9.iloc[-1])
     curr_ema21 = float(ema21.iloc[-1])
+    prev_ema9 = float(ema9.iloc[-2]) if len(ema9) >= 2 else curr_ema9
+    prev_ema21 = float(ema21.iloc[-2]) if len(ema21) >= 2 else curr_ema21
     curr_rsi = float(rsi.iloc[-1]) if pd.notna(rsi.iloc[-1]) else 50.0
 
     return {
         "price": curr_price,
+        "prev_price": prev_price,
         "ema9": curr_ema9,
         "ema21": curr_ema21,
+        "prev_ema9": prev_ema9,
+        "prev_ema21": prev_ema21,
         "rsi": curr_rsi,
     }
 
@@ -169,12 +150,19 @@ def analyze_trade_signal(pair_name: str, prices: list[float]) -> dict | None:
         return None
 
     curr_price = ind["price"]
+    prev_price = ind["prev_price"]
     curr_ema9 = ind["ema9"]
     curr_ema21 = ind["ema21"]
+    prev_ema9 = ind["prev_ema9"]
+    prev_ema21 = ind["prev_ema21"]
     curr_rsi = ind["rsi"]
 
-    if curr_ema9 > curr_ema21 and curr_price >= curr_ema9 and curr_rsi >= 55.0:
-        forecast = min(96.0, round(72.0 + max(0.0, curr_rsi - 42) * 0.75, 2))
+    bullish_cross_or_trend = (
+        (prev_ema9 <= prev_ema21 and curr_ema9 > curr_ema21 and curr_rsi >= 50.0)
+        or (curr_ema9 > curr_ema21 and curr_price >= curr_ema9 and curr_price >= prev_price and curr_rsi >= 52.0)
+    )
+    if bullish_cross_or_trend:
+        forecast = min(96.0, round(74.0 + max(0.0, curr_rsi - 45.0) * 0.8 + (1.5 if curr_ema9 > curr_ema21 else 0.0), 2))
         if forecast < MIN_FORECAST_PCT:
             return None
         return {
@@ -185,8 +173,12 @@ def analyze_trade_signal(pair_name: str, prices: list[float]) -> dict | None:
             "entry_price": curr_price,
         }
 
-    if curr_ema9 < curr_ema21 and curr_price <= curr_ema9 and curr_rsi <= 45.0:
-        forecast = min(96.0, round(72.0 + max(0.0, 58 - curr_rsi) * 0.75, 2))
+    bearish_cross_or_trend = (
+        (prev_ema9 >= prev_ema21 and curr_ema9 < curr_ema21 and curr_rsi <= 50.0)
+        or (curr_ema9 < curr_ema21 and curr_price <= curr_ema9 and curr_price <= prev_price and curr_rsi <= 48.0)
+    )
+    if bearish_cross_or_trend:
+        forecast = min(96.0, round(74.0 + max(0.0, 55.0 - curr_rsi) * 0.8 + (1.5 if curr_ema9 < curr_ema21 else 0.0), 2))
         if forecast < MIN_FORECAST_PCT:
             return None
         return {
@@ -333,32 +325,6 @@ async def scan_market_job(context: ContextTypes.DEFAULT_TYPE):
         logger.error("فشل نشر الصفقة في القناة: %s", e)
 
 
-async def post_market_news_job(context: ContextTypes.DEFAULT_TYPE):
-    global news_index
-
-    title, body = MARKET_AND_TRADERS_NEWS[news_index % len(MARKET_AND_TRADERS_NEWS)]
-    news_index += 1
-    now_str = datetime.now().strftime("%H:%M:%S")
-
-    news_text = (
-        f"{title}\n"
-        f"🕒 {now_str}\n\n"
-        f"📝 الوصف:\n"
-        f"{body}\n\n"
-        f"🔗 REGISTER HERE: {AFFILIATE_LINK}"
-    )
-
-    try:
-        await context.bot.send_message(
-            chat_id=CHANNEL_ID,
-            text=news_text,
-            disable_web_page_preview=True,
-        )
-        logger.info("تم نشر خبر السوق والمتداولين تلقائياً في القناة.")
-    except TelegramError as e:
-        logger.error("تعذر نشر أخبار السوق في القناة: %s", e)
-
-
 async def keep_alive_job(context: ContextTypes.DEFAULT_TYPE):
     await asyncio.to_thread(ping_self)
 
@@ -376,17 +342,12 @@ def main():
         first=5,
     )
     app.job_queue.run_repeating(
-        post_market_news_job,
-        interval=NEWS_INTERVAL_SECONDS,
-        first=120,
-    )
-    app.job_queue.run_repeating(
         keep_alive_job,
         interval=KEEP_ALIVE_INTERVAL_SECONDS,
         first=180,
     )
 
-    logger.info("🤖 نظام الصفقات عالية التوقع وأخبار السوق يعمل الآن تلقائياً على قناتك...")
+    logger.info("🤖 نظام الصفقات عالية التوقع يعمل الآن تلقائياً على قناتك...")
     app.run_polling()
 
 
