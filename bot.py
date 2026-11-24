@@ -48,14 +48,14 @@ PAIRS_LIST = [
     ("NZD", "CHF"),
 ]
 
-SCAN_INTERVAL_SECONDS = 60         # جمع الأسعار وفحص السوق تلقائياً كل دقيقة
+SCAN_INTERVAL_SECONDS = 60         # جمع الأسعار وفحص الصفقات تلقائياً كل دقيقة
 TRADE_DURATION_MINUTES = 5         # مدة الشمعة / الصفقة (M5)
 MAX_MARTINGALE_STEPS = 3           # أقصى عدد لمحاولات التعويض (winn1, winn2, winn3)
 SIGNAL_COOLDOWN_MINUTES = 15       # انتظار 15 دقيقة قبل تكرار صفقة نفس الزوج
-ANALYSIS_COOLDOWN_MINUTES = 15     # الحد الأدنى بين تحليلات نفس الزوج
 NEWS_INTERVAL_SECONDS = 1800       # نشر أخبار السوق والمتداولين كل 30 دقيقة
 KEEP_ALIVE_INTERVAL_SECONDS = 480  # تنشيط رابط الخدمة كل 8 دقائق لتقليل الخمول
 MIN_HISTORY_POINTS = 10            # عدد نقاط السعر المطلوبة للبدء السريع
+MIN_FORECAST_PCT = 82.0            # الحد الأدنى لنسبة التوقع لقبول الصفقة الأقوى
 
 MARKET_AND_TRADERS_NEWS = [
     (
@@ -82,7 +82,6 @@ MARKET_AND_TRADERS_NEWS = [
 
 price_history: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=120))
 last_signal_time: dict[str, datetime] = {}
-last_analysis_time: dict[str, datetime] = {}
 news_index: int = 0
 
 logging.basicConfig(
@@ -152,33 +151,16 @@ def compute_indicators(prices: list[float]) -> dict | None:
     rsi = 100 - (100 / (1 + rs))
 
     curr_price = float(close.iloc[-1])
-    prev_price = float(close.iloc[-2]) if len(close) >= 2 else curr_price
     curr_ema9 = float(ema9.iloc[-1])
     curr_ema21 = float(ema21.iloc[-1])
-    prev_ema9 = float(ema9.iloc[-2]) if len(ema9) >= 2 else curr_ema9
-    prev_ema21 = float(ema21.iloc[-2]) if len(ema21) >= 2 else curr_ema21
     curr_rsi = float(rsi.iloc[-1]) if pd.notna(rsi.iloc[-1]) else 50.0
 
     return {
         "price": curr_price,
-        "prev_price": prev_price,
         "ema9": curr_ema9,
         "ema21": curr_ema21,
-        "prev_ema9": prev_ema9,
-        "prev_ema21": prev_ema21,
         "rsi": curr_rsi,
     }
-
-
-def build_description(pair_name: str, tend: str, rsi_val: float, ema_bullish: bool) -> str:
-    trend_desc = "تقاطع إيجابي ودعم صاعد للمتوسطات" if ema_bullish else "ضغط بيعي وتمركز تحت المتوسطات"
-    if rsi_val >= 65:
-        momentum_desc = f"مؤشر RSI عند {rsi_val:.1f} يشير إلى تشبع شرائي قريب من مقاومة محتملة"
-    elif rsi_val <= 35:
-        momentum_desc = f"مؤشر RSI عند {rsi_val:.1f} يشير إلى تشبع بيعي واحتمال ارتداد أو استمرار زخم"
-    else:
-        momentum_desc = f"مؤشر RSI عند {rsi_val:.1f} يعكس حركة منتظمة تدعم اتجاه {tend}"
-    return f"تحليل {pair_name}: {trend_desc}، و{momentum_desc}. يُنصح بالالتزام بإدارة رأس المال."
 
 
 def analyze_trade_signal(pair_name: str, prices: list[float]) -> dict | None:
@@ -191,67 +173,31 @@ def analyze_trade_signal(pair_name: str, prices: list[float]) -> dict | None:
     curr_ema21 = ind["ema21"]
     curr_rsi = ind["rsi"]
 
-    if curr_ema9 >= curr_ema21 or curr_price >= curr_ema21:
+    if curr_ema9 > curr_ema21 and curr_price >= curr_ema9 and curr_rsi >= 55.0:
         forecast = min(96.0, round(72.0 + max(0.0, curr_rsi - 42) * 0.75, 2))
+        if forecast < MIN_FORECAST_PCT:
+            return None
         return {
             "direction": "call",
             "arrow": "🔼",
             "tend": "Buy",
             "forecast": forecast,
             "entry_price": curr_price,
-            "description": build_description(pair_name, "Buy", curr_rsi, True),
         }
 
-    forecast = min(96.0, round(72.0 + max(0.0, 58 - curr_rsi) * 0.75, 2))
-    return {
-        "direction": "put",
-        "arrow": "🔽",
-        "tend": "Sell",
-        "forecast": forecast,
-        "entry_price": curr_price,
-        "description": build_description(pair_name, "Sell", curr_rsi, False),
-    }
-
-
-def build_market_analysis(pair_name: str, prices: list[float]) -> str | None:
-    ind = compute_indicators(prices)
-    if not ind:
-        return None
-
-    curr_price = ind["price"]
-    prev_price = ind["prev_price"]
-    curr_ema9 = ind["ema9"]
-    curr_ema21 = ind["ema21"]
-    curr_rsi = ind["rsi"]
-
-    bullish = curr_ema9 >= curr_ema21 or curr_price >= curr_ema21
-    if bullish:
-        arrow = "🔼"
-        direction = "call"
-        tend = "Buy"
-        forecast = min(96.0, round(72.0 + max(0.0, curr_rsi - 42) * 0.75, 2))
-    else:
-        arrow = "🔽"
-        direction = "put"
-        tend = "Sell"
+    if curr_ema9 < curr_ema21 and curr_price <= curr_ema9 and curr_rsi <= 45.0:
         forecast = min(96.0, round(72.0 + max(0.0, 58 - curr_rsi) * 0.75, 2))
+        if forecast < MIN_FORECAST_PCT:
+            return None
+        return {
+            "direction": "put",
+            "arrow": "🔽",
+            "tend": "Sell",
+            "forecast": forecast,
+            "entry_price": curr_price,
+        }
 
-    exec_time = (datetime.now() + timedelta(minutes=1)).strftime("%H:%M:%S")
-    change_pct = ((curr_price - prev_price) / prev_price) * 100 if prev_price != 0 else 0.0
-    description = build_description(pair_name, tend, curr_rsi, bullish)
-
-    return (
-        f"📊 تحليل السوق — {pair_name}\n"
-        f"💳 {pair_name}\n"
-        f"🔥 M{TRADE_DURATION_MINUTES}\n"
-        f"⏳ {exec_time}\n"
-        f"{arrow} {direction}\n\n"
-        f"🚦 Tend: {tend}\n"
-        f"📈 Forecast: {forecast:.2f}%\n"
-        f" Entry: {curr_price:.5f} ({change_pct:+.3f}%)\n\n"
-        f"📝 {description}\n\n"
-        f"🔗 REGISTER HERE: {AFFILIATE_LINK}"
-    )
+    return None
 
 
 async def verify_and_post_result(context: ContextTypes.DEFAULT_TYPE):
@@ -324,69 +270,67 @@ async def scan_market_job(context: ContextTypes.DEFAULT_TYPE):
     for pair_name, current_price in snapshot.items():
         price_history[pair_name].append(current_price)
 
+    best_candidate: tuple[float, str, dict] | None = None
+
     for pair_name, _ in PAIRS_LIST:
         history = list(price_history[pair_name])
         if len(history) < MIN_HISTORY_POINTS:
             continue
 
         last_sig = last_signal_time.get(pair_name)
-        if not last_sig or (now - last_sig) >= timedelta(minutes=SIGNAL_COOLDOWN_MINUTES):
-            signal = analyze_trade_signal(pair_name, history)
-            if signal:
-                exec_time = (now + timedelta(minutes=1)).strftime("%H:%M:%S")
-                post_text = (
-                    f"💳 {pair_name}\n"
-                    f"🔥 M{TRADE_DURATION_MINUTES}\n"
-                    f"⏳ {exec_time}\n"
-                    f"{signal['arrow']} {signal['direction']}\n\n"
-                    f"🚦 Tend: {signal['tend']}\n"
-                    f"📈 Forecast: {signal['forecast']:.2f}%\n"
-                    f" Entry: {signal['entry_price']:.5f}\n\n"
-                    f"📝 {signal['description']}\n\n"
-                    f"🔗 REGISTER HERE: {AFFILIATE_LINK}"
-                )
+        if last_sig and (now - last_sig) < timedelta(minutes=SIGNAL_COOLDOWN_MINUTES):
+            continue
 
-                try:
-                    sent_msg = await context.bot.send_message(
-                        chat_id=CHANNEL_ID,
-                        text=post_text,
-                        disable_web_page_preview=True,
-                    )
-                    last_signal_time[pair_name] = now
-                    logger.info("تم نشر صفقة جديدة: %s (%s)", pair_name, signal["direction"])
+        signal = analyze_trade_signal(pair_name, history)
+        if not signal:
+            continue
 
-                    context.job_queue.run_once(
-                        verify_and_post_result,
-                        when=TRADE_DURATION_MINUTES * 60,
-                        data={
-                            "pair_name": pair_name,
-                            "entry_price": signal["entry_price"],
-                            "direction": signal["direction"],
-                            "message_id": sent_msg.message_id,
-                            "step": 1,
-                        },
-                    )
-                    break
-                except TelegramError as e:
-                    logger.error("فشل نشر الصفقة في القناة: %s", e)
-                    break
+        if best_candidate is None or signal["forecast"] > best_candidate[0]:
+            best_candidate = (signal["forecast"], pair_name, signal)
 
-        last_ana = last_analysis_time.get(pair_name)
-        if not last_ana or (now - last_ana) >= timedelta(minutes=ANALYSIS_COOLDOWN_MINUTES):
-            analysis_text = build_market_analysis(pair_name, history)
-            if analysis_text:
-                try:
-                    await context.bot.send_message(
-                        chat_id=CHANNEL_ID,
-                        text=analysis_text,
-                        disable_web_page_preview=True,
-                    )
-                    last_analysis_time[pair_name] = now
-                    logger.info("تم نشر تحليل سوق تلقائي لزوج %s في القناة.", pair_name)
-                    break
-                except TelegramError as e:
-                    logger.error("تعذر نشر تحليل السوق في القناة: %s", e)
-                    break
+    if best_candidate is None:
+        return
+
+    _, pair_name, signal = best_candidate
+    exec_time = (now + timedelta(minutes=1)).strftime("%H:%M:%S")
+    post_text = (
+        f"💳 {pair_name}\n"
+        f"🔥 M{TRADE_DURATION_MINUTES}\n"
+        f"⏳ {exec_time}\n"
+        f"{signal['arrow']} {signal['direction']}\n\n"
+        f"🚦 Tend: {signal['tend']}\n"
+        f"📈 Forecast: {signal['forecast']:.2f}%\n"
+        f" Entry: {signal['entry_price']:.5f}\n\n"
+        f"🔗 REGISTER HERE: {AFFILIATE_LINK}"
+    )
+
+    try:
+        sent_msg = await context.bot.send_message(
+            chat_id=CHANNEL_ID,
+            text=post_text,
+            disable_web_page_preview=True,
+        )
+        last_signal_time[pair_name] = now
+        logger.info(
+            "تم نشر صفقة عالية التوقع: %s (%s) بنسبة %.2f%%",
+            pair_name,
+            signal["direction"],
+            signal["forecast"],
+        )
+
+        context.job_queue.run_once(
+            verify_and_post_result,
+            when=TRADE_DURATION_MINUTES * 60,
+            data={
+                "pair_name": pair_name,
+                "entry_price": signal["entry_price"],
+                "direction": signal["direction"],
+                "message_id": sent_msg.message_id,
+                "step": 1,
+            },
+        )
+    except TelegramError as e:
+        logger.error("فشل نشر الصفقة في القناة: %s", e)
 
 
 async def post_market_news_job(context: ContextTypes.DEFAULT_TYPE):
@@ -442,7 +386,7 @@ def main():
         first=180,
     )
 
-    logger.info("🤖 نظام الصفقات والتحليلات وأخبار السوق يعمل الآن تلقائياً على قناتك...")
+    logger.info("🤖 نظام الصفقات عالية التوقع وأخبار السوق يعمل الآن تلقائياً على قناتك...")
     app.run_polling()
 
 
