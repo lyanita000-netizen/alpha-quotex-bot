@@ -47,9 +47,9 @@ PAIRS_MAP = {
     "NZDCHF": "NZDCHF=X",
 }
 
-SCAN_INTERVAL_SECONDS = 180  # فحص السوق كل 3 دقائق
+SCAN_INTERVAL_SECONDS = 420  # فحص السوق كل 7 دقائق لتخفيف الضغط على yfinance
 TRADE_DURATION_MINUTES = 5   # مدة الصفقة (M5)
-COOLDOWN_MINUTES = 15        # انتظار 15 دقيقة قبل تكرار نفس الزوج
+COOLDOWN_MINUTES = 30        # انتظار 30 دقيقة قبل تكرار نفس الزوج
 
 last_signal_time: dict[str, datetime] = {}
 
@@ -202,6 +202,7 @@ async def scan_market_job(context: ContextTypes.DEFAULT_TYPE):
         if last_time and (now - last_time) < timedelta(minutes=COOLDOWN_MINUTES):
             continue
 
+        await asyncio.sleep(2)
         signal = await asyncio.to_thread(analyze_real_market, yf_symbol)
         if not signal:
             continue
