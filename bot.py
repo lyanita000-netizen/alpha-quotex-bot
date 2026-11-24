@@ -1,7 +1,10 @@
 import asyncio
 import logging
+import os
+import threading
 import time
 from datetime import datetime, timedelta
+from http.server import BaseHTTPRequestHandler, HTTPServer
 import pandas as pd
 import yfinance as yf
 from telegram.error import TelegramError
@@ -14,7 +17,6 @@ AFFILIATE_LINK = "https://broker-qx.pro/sign-up/?lid=2438595"
 
 # جميع أزواج العملات الحقيقية (رمز العرض : رمز Yahoo Finance)
 PAIRS_MAP = {
-    # أزواج الدولار الرئيسية (Majors)
     "EURUSD": "EURUSD=X",
     "GBPUSD": "GBPUSD=X",
     "USDJPY": "USDJPY=X",
@@ -22,20 +24,17 @@ PAIRS_MAP = {
     "USDCAD": "USDCAD=X",
     "AUDUSD": "AUDUSD=X",
     "NZDUSD": "NZDUSD=X",
-    # أزواج اليورو (EUR Crosses)
     "EURGBP": "EURGBP=X",
     "EURJPY": "EURJPY=X",
     "EURCHF": "EURCHF=X",
     "EURCAD": "EURCAD=X",
     "EURAUD": "EURAUD=X",
     "EURNZD": "EURNZD=X",
-    # أزواج الباوند (GBP Crosses)
     "GBPJPY": "GBPJPY=X",
     "GBPCHF": "GBPCHF=X",
     "GBPCAD": "GBPCAD=X",
     "GBPAUD": "GBPAUD=X",
     "GBPNZD": "GBPNZD=X",
-    # أزواج الأسترالي والكندي والنيوزيلندي والين
     "AUDCAD": "AUDCAD=X",
     "AUDCHF": "AUDCHF=X",
     "AUDJPY": "AUDJPY=X",
@@ -48,9 +47,9 @@ PAIRS_MAP = {
     "NZDCHF": "NZDCHF=X",
 }
 
-SCAN_INTERVAL_SECONDS = 180  # فحص السوق كل 3 دقائق للبحث عن فرصة حقيقية
-TRADE_DURATION_MINUTES = 5   # مدة الصفقة (M5) لمتابعة النتيجة الحقيقية بدقة
-COOLDOWN_MINUTES = 15        # عدم تكرار نفس الزوج قبل مرور 15 دقيقة
+SCAN_INTERVAL_SECONDS = 180  # فحص السوق كل 3 دقائق
+TRADE_DURATION_MINUTES = 5   # مدة الصفقة (M5)
+COOLDOWN_MINUTES = 15        # انتظار 15 دقيقة قبل تكرار نفس الزوج
 
 last_signal_time: dict[str, datetime] = {}
 
@@ -61,8 +60,24 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+# خادم ويب خفيف لقبول الخطة المجانية على Render
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is running")
+
+    def log_message(self, format, *args):
+        pass
+
+
+def start_web_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), HealthHandler)
+    server.serve_forever()
+
+
 def analyze_real_market(yf_symbol: str) -> dict | None:
-    """جلب بيانات شموع حقيقية وحساب RSI و EMA لتحديد فرصة دخول فعلية."""
     try:
         df = yf.download(
             tickers=yf_symbol,
@@ -86,11 +101,9 @@ def analyze_real_market(yf_symbol: str) -> dict | None:
     if len(close) < 30:
         return None
 
-    # حساب المتوسطات المتحركة EMA 9 و EMA 21
     ema9 = close.ewm(span=9, adjust=False).mean()
     ema21 = close.ewm(span=21, adjust=False).mean()
 
-    # حساب مؤشر القوة النسبية RSI 14
     delta = close.diff()
     gain = delta.clip(lower=0).rolling(window=14).mean()
     loss = (-delta.clip(upper=0)).rolling(window=14).mean()
@@ -104,7 +117,6 @@ def analyze_real_market(yf_symbol: str) -> dict | None:
     prev_ema21 = float(ema21.iloc[-2])
     curr_rsi = float(rsi.iloc[-1]) if pd.notna(rsi.iloc[-1]) else 50.0
 
-    # شرط شراء حقيقي مع نطاق RSI موسّع (42 إلى 72)
     if (prev_ema9 <= prev_ema21 and curr_ema9 > curr_ema21 and 42 <= curr_rsi <= 72) or (
         curr_ema9 > curr_ema21 and curr_price > curr_ema9 and 48 <= curr_rsi <= 70
     ):
@@ -117,7 +129,6 @@ def analyze_real_market(yf_symbol: str) -> dict | None:
             "entry_price": curr_price,
         }
 
-    # شرط بيع حقيقي مع نطاق RSI موسّع (28 إلى 58)
     if (prev_ema9 >= prev_ema21 and curr_ema9 < curr_ema21 and 28 <= curr_rsi <= 58) or (
         curr_ema9 < curr_ema21 and curr_price < curr_ema9 and 30 <= curr_rsi <= 52
     ):
@@ -158,7 +169,6 @@ def fetch_latest_price(yf_symbol: str, retries: int = 3) -> float | None:
 
 
 async def verify_and_post_result(context: ContextTypes.DEFAULT_TYPE):
-    """التحقق من النتيجة الحقيقية بعد انتهاء مدة الصفقة ونشرها في القناة."""
     data = context.job.data
     yf_symbol = data["yf_symbol"]
     entry_price = data["entry_price"]
@@ -185,7 +195,6 @@ async def verify_and_post_result(context: ContextTypes.DEFAULT_TYPE):
 
 
 async def scan_market_job(context: ContextTypes.DEFAULT_TYPE):
-    """فحص أزواج السوق الحقيقية ونشر أقوى صفقة متاحة فقط."""
     now = datetime.now()
 
     for display_pair, yf_symbol in PAIRS_MAP.items():
@@ -218,7 +227,6 @@ async def scan_market_job(context: ContextTypes.DEFAULT_TYPE):
             last_signal_time[display_pair] = now
             logger.info("تم نشر صفقة حقيقية جديدة: %s (%s)", display_pair, signal["direction"])
 
-            # جدولة التحقق من النتيجة الحقيقية بعد انتهاء مدة الصفقة + دقيقة
             context.job_queue.run_once(
                 verify_and_post_result,
                 when=(TRADE_DURATION_MINUTES + 1) * 60,
@@ -229,16 +237,16 @@ async def scan_market_job(context: ContextTypes.DEFAULT_TYPE):
                     "message_id": sent_msg.message_id,
                 },
             )
-            break  # صفقة واحدة نظيفة في كل دورة فحص
+            break
         except TelegramError as e:
             logger.error("فشل نشر الصفقة في القناة: %s", e)
             break
 
 
 def main():
-    app = Application.builder().token(BOT_TOKEN).build()
+    threading.Thread(target=start_web_server, daemon=True).start()
 
-    # يبدأ أول فحص للسوق بعد 5 ثوانٍ من التشغيل ثم كل 3 دقائق تلقائياً
+    app = Application.builder().token(BOT_TOKEN).build()
     app.job_queue.run_repeating(
         scan_market_job,
         interval=SCAN_INTERVAL_SECONDS,
