@@ -2,11 +2,11 @@ import asyncio
 import logging
 import os
 import threading
-import time
+from collections import defaultdict, deque
 from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import pandas as pd
-import yfinance as yf
+import requests
 from telegram.error import TelegramError
 from telegram.ext import Application, ContextTypes
 
@@ -15,42 +15,34 @@ BOT_TOKEN = "9132434770:AAGulVo-sWXI6Mm_59yVQPXXraoAn-nOTRs"
 CHANNEL_ID = -1003938306672
 AFFILIATE_LINK = "https://broker-qx.pro/sign-up/?lid=2438595"
 
-# جميع أزواج العملات الحقيقية (رمز العرض : رمز Yahoo Finance)
-PAIRS_MAP = {
-    "EURUSD": "EURUSD=X",
-    "GBPUSD": "GBPUSD=X",
-    "USDJPY": "USDJPY=X",
-    "USDCHF": "USDCHF=X",
-    "USDCAD": "USDCAD=X",
-    "AUDUSD": "AUDUSD=X",
-    "NZDUSD": "NZDUSD=X",
-    "EURGBP": "EURGBP=X",
-    "EURJPY": "EURJPY=X",
-    "EURCHF": "EURCHF=X",
-    "EURCAD": "EURCAD=X",
-    "EURAUD": "EURAUD=X",
-    "EURNZD": "EURNZD=X",
-    "GBPJPY": "GBPJPY=X",
-    "GBPCHF": "GBPCHF=X",
-    "GBPCAD": "GBPCAD=X",
-    "GBPAUD": "GBPAUD=X",
-    "GBPNZD": "GBPNZD=X",
-    "AUDCAD": "AUDCAD=X",
-    "AUDCHF": "AUDCHF=X",
-    "AUDJPY": "AUDJPY=X",
-    "AUDNZD": "AUDNZD=X",
-    "CADJPY": "CADJPY=X",
-    "CADCHF": "CADCHF=X",
-    "CHFJPY": "CHFJPY=X",
-    "NZDJPY": "NZDJPY=X",
-    "NZDCAD": "NZDCAD=X",
-    "NZDCHF": "NZDCHF=X",
-}
+# أزواج العملات المدعومة (الأساس : المقابل)
+PAIRS_LIST = [
+    ("EUR", "USD"),
+    ("GBP", "USD"),
+    ("USD", "JPY"),
+    ("USD", "CHF"),
+    ("USD", "CAD"),
+    ("AUD", "USD"),
+    ("NZD", "USD"),
+    ("EUR", "GBP"),
+    ("EUR", "JPY"),
+    ("EUR", "CHF"),
+    ("EUR", "CAD"),
+    ("EUR", "AUD"),
+    ("GBP", "JPY"),
+    ("GBP", "CHF"),
+    ("GBP", "CAD"),
+    ("AUD", "JPY"),
+    ("CAD", "JPY"),
+    ("CHF", "JPY"),
+]
 
-SCAN_INTERVAL_SECONDS = 420  # فحص السوق كل 7 دقائق لتخفيف الضغط على yfinance
+SCAN_INTERVAL_SECONDS = 60   # جمع الأسعار وفحص السوق كل دقيقة
 TRADE_DURATION_MINUTES = 5   # مدة الصفقة (M5)
-COOLDOWN_MINUTES = 30        # انتظار 30 دقيقة قبل تكرار نفس الزوج
+COOLDOWN_MINUTES = 20        # انتظار 20 دقيقة قبل تكرار نفس الزوج
+MIN_HISTORY_POINTS = 25      # عدد نقاط السعر المطلوبة لحساب المؤشرات
 
+price_history: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=120))
 last_signal_time: dict[str, datetime] = {}
 
 logging.basicConfig(
@@ -77,30 +69,32 @@ def start_web_server():
     server.serve_forever()
 
 
-def analyze_real_market(yf_symbol: str) -> dict | None:
+def fetch_rates_snapshot() -> dict[str, float]:
+    rates_out: dict[str, float] = {}
     try:
-        df = yf.download(
-            tickers=yf_symbol,
-            period="2d",
-            interval="5m",
-            progress=False,
-            auto_adjust=True,
+        resp = requests.get(
+            "https://api.frankfurter.app/latest?from=EUR",
+            timeout=15,
         )
+        resp.raise_for_status()
+        data = resp.json()
+        eur_rates = data.get("rates", {})
+        eur_rates["EUR"] = 1.0
+
+        for base, quote in PAIRS_LIST:
+            if base in eur_rates and quote in eur_rates:
+                pair_name = f"{base}{quote}"
+                rates_out[pair_name] = float(eur_rates[quote]) / float(eur_rates[base])
     except Exception as e:
-        logger.warning("تعذر جلب بيانات %s: %s", yf_symbol, e)
+        logger.warning("تعذر جلب أسعار الصرف اللحظية: %s", e)
+    return rates_out
+
+
+def analyze_series(prices: list[float]) -> dict | None:
+    if len(prices) < MIN_HISTORY_POINTS:
         return None
 
-    if df is None or df.empty or len(df) < 30:
-        return None
-
-    close = df["Close"]
-    if isinstance(close, pd.DataFrame):
-        close = close.iloc[:, 0]
-    close = close.dropna()
-
-    if len(close) < 30:
-        return None
-
+    close = pd.Series(prices, dtype="float64")
     ema9 = close.ewm(span=9, adjust=False).mean()
     ema21 = close.ewm(span=21, adjust=False).mean()
 
@@ -117,10 +111,10 @@ def analyze_real_market(yf_symbol: str) -> dict | None:
     prev_ema21 = float(ema21.iloc[-2])
     curr_rsi = float(rsi.iloc[-1]) if pd.notna(rsi.iloc[-1]) else 50.0
 
-    if (prev_ema9 <= prev_ema21 and curr_ema9 > curr_ema21 and 42 <= curr_rsi <= 72) or (
-        curr_ema9 > curr_ema21 and curr_price > curr_ema9 and 48 <= curr_rsi <= 70
+    if (prev_ema9 <= prev_ema21 and curr_ema9 > curr_ema21 and curr_rsi >= 45) or (
+        curr_ema9 > curr_ema21 and curr_price > curr_ema9 and 45 <= curr_rsi <= 75
     ):
-        forecast = min(96.0, round(72.0 + (curr_rsi - 42) * 0.75, 2))
+        forecast = min(95.0, round(72.0 + max(0.0, curr_rsi - 45) * 0.7, 2))
         return {
             "direction": "call",
             "arrow": "🔼",
@@ -129,10 +123,10 @@ def analyze_real_market(yf_symbol: str) -> dict | None:
             "entry_price": curr_price,
         }
 
-    if (prev_ema9 >= prev_ema21 and curr_ema9 < curr_ema21 and 28 <= curr_rsi <= 58) or (
-        curr_ema9 < curr_ema21 and curr_price < curr_ema9 and 30 <= curr_rsi <= 52
+    if (prev_ema9 >= prev_ema21 and curr_ema9 < curr_ema21 and curr_rsi <= 55) or (
+        curr_ema9 < curr_ema21 and curr_price < curr_ema9 and 25 <= curr_rsi <= 55
     ):
-        forecast = min(96.0, round(72.0 + (58 - curr_rsi) * 0.75, 2))
+        forecast = min(95.0, round(72.0 + max(0.0, 55 - curr_rsi) * 0.7, 2))
         return {
             "direction": "put",
             "arrow": "🔽",
@@ -144,38 +138,17 @@ def analyze_real_market(yf_symbol: str) -> dict | None:
     return None
 
 
-def fetch_latest_price(yf_symbol: str, retries: int = 3) -> float | None:
-    for attempt in range(retries):
-        try:
-            df = yf.download(
-                tickers=yf_symbol,
-                period="1d",
-                interval="1m",
-                progress=False,
-                auto_adjust=True,
-            )
-            if df is not None and not df.empty:
-                close = df["Close"]
-                if isinstance(close, pd.DataFrame):
-                    close = close.iloc[:, 0]
-                clean = close.dropna()
-                if not clean.empty:
-                    return float(clean.iloc[-1])
-        except Exception as e:
-            logger.warning("محاولة %d لجلب السعر الأخير لـ %s فشلت: %s", attempt + 1, yf_symbol, e)
-        if attempt < retries - 1:
-            time.sleep(2)
-    return None
-
-
 async def verify_and_post_result(context: ContextTypes.DEFAULT_TYPE):
     data = context.job.data
-    yf_symbol = data["yf_symbol"]
+    pair_name = data["pair_name"]
     entry_price = data["entry_price"]
     direction = data["direction"]
     message_id = data["message_id"]
 
-    exit_price = await asyncio.to_thread(fetch_latest_price, yf_symbol)
+    snapshot = await asyncio.to_thread(fetch_rates_snapshot)
+    exit_price = snapshot.get(pair_name)
+    if exit_price is None and price_history[pair_name]:
+        exit_price = price_history[pair_name][-1]
     if exit_price is None:
         return
 
@@ -196,20 +169,29 @@ async def verify_and_post_result(context: ContextTypes.DEFAULT_TYPE):
 
 async def scan_market_job(context: ContextTypes.DEFAULT_TYPE):
     now = datetime.now()
+    snapshot = await asyncio.to_thread(fetch_rates_snapshot)
+    if not snapshot:
+        return
 
-    for display_pair, yf_symbol in PAIRS_MAP.items():
-        last_time = last_signal_time.get(display_pair)
+    for pair_name, current_price in snapshot.items():
+        price_history[pair_name].append(current_price)
+
+    for pair_name, _ in PAIRS_LIST:
+        history = list(price_history[pair_name])
+        if len(history) < MIN_HISTORY_POINTS:
+            continue
+
+        last_time = last_signal_time.get(pair_name)
         if last_time and (now - last_time) < timedelta(minutes=COOLDOWN_MINUTES):
             continue
 
-        await asyncio.sleep(2)
-        signal = await asyncio.to_thread(analyze_real_market, yf_symbol)
+        signal = analyze_series(history)
         if not signal:
             continue
 
         exec_time = (now + timedelta(minutes=1)).strftime("%H:%M:%S")
         post_text = (
-            f"💳 {display_pair}\n"
+            f"💳 {pair_name}\n"
             f"🔥 M{TRADE_DURATION_MINUTES}\n"
             f"⏳ {exec_time}\n"
             f"{signal['arrow']} {signal['direction']}\n\n"
@@ -225,14 +207,14 @@ async def scan_market_job(context: ContextTypes.DEFAULT_TYPE):
                 text=post_text,
                 disable_web_page_preview=True,
             )
-            last_signal_time[display_pair] = now
-            logger.info("تم نشر صفقة حقيقية جديدة: %s (%s)", display_pair, signal["direction"])
+            last_signal_time[pair_name] = now
+            logger.info("تم نشر صفقة جديدة: %s (%s)", pair_name, signal["direction"])
 
             context.job_queue.run_once(
                 verify_and_post_result,
-                when=(TRADE_DURATION_MINUTES + 1) * 60,
+                when=TRADE_DURATION_MINUTES * 60,
                 data={
-                    "yf_symbol": yf_symbol,
+                    "pair_name": pair_name,
                     "entry_price": signal["entry_price"],
                     "direction": signal["direction"],
                     "message_id": sent_msg.message_id,
@@ -257,7 +239,7 @@ def main():
         first=5,
     )
 
-    logger.info("🤖 نظام التحليل الحقيقي والنشر التلقائي يعمل الآن على قناتك...")
+    logger.info("🤖 نظام التحليل والنشر التلقائي يعمل الآن على قناتك...")
     app.run_polling()
 
 
