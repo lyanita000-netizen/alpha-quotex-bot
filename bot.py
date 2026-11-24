@@ -246,6 +246,9 @@ async def scan_market_job(context: ContextTypes.DEFAULT_TYPE):
 def main():
     threading.Thread(target=start_web_server, daemon=True).start()
 
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
     app = Application.builder().token(BOT_TOKEN).build()
     app.job_queue.run_repeating(
         scan_market_job,
