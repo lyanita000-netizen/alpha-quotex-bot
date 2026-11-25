@@ -4,9 +4,15 @@ import requests
 WEBHOOK_URL = "https://alpha-quotex-bot.onrender.com/webhook"
 WEBHOOK_SECRET = "alpha_qx_2026"
 PAIR_NAME = "EURUSD"
-TIMEFRAME = "M5"
-CANDLE_SECONDS = 300          # 5 دقائق لكل مرحلة (M5)
-MAX_MARTINGALE_STEPS = 3      # 1 صفقة أساسية + 2 تعويض (winn1, winn2, winn3 أو Loss)
+TIMEFRAME = "M1"
+CANDLE_SECONDS = 60           # دقيقة واحدة لكل مرحلة
+TOTAL_STEPS = 4               # 1 صفقة أساسية + 3 صفقات تعويض (حد أقصى 4 دقائق)
+
+SUPERSCRIPTS = {
+    1: "¹",
+    2: "²",
+    3: "³",
+}
 
 
 def fetch_eurusd_price() -> float | None:
@@ -29,6 +35,19 @@ def post_webhook(payload: dict) -> dict | None:
     except Exception as e:
         print("خطأ في إرسال Webhook:", e)
         return None
+
+
+def is_win(direction: str, entry_price: float, exit_price: float) -> bool:
+    if direction == "call":
+        return exit_price > entry_price
+    return exit_price < entry_price
+
+
+def format_win_label(step: int) -> str:
+    if step == 1:
+        return "WINN ✅"
+    sup = SUPERSCRIPTS.get(step - 1, str(step - 1))
+    return f"WINN{sup} ✅"
 
 
 def run_cycle():
@@ -58,20 +77,19 @@ def run_cycle():
         return
 
     msg_id = resp["message_id"]
-    print(f"تم إرسال الصفقة ({direction}) بسعر {entry_price:.5f} | message_id={msg_id}")
+    print(f"تم نشر الصفقة ({direction}) بسعر دخول {entry_price:.5f} | message_id={msg_id}")
 
-    for step in range(1, MAX_MARTINGALE_STEPS + 1):
+    for step in range(1, TOTAL_STEPS + 1):
+        stage_name = "الصفقة الأساسية" if step == 1 else f"صفقة التعويض {step - 1}"
+        print(f"انتظار دقيقة واحدة لنتيجة {stage_name} (الدقيقة {step})...")
         time.sleep(CANDLE_SECONDS)
+
         exit_price = fetch_eurusd_price()
         if exit_price is None:
             exit_price = entry_price
 
-        won = (direction == "call" and exit_price > entry_price) or (
-            direction == "put" and exit_price < entry_price
-        )
-
-        if won:
-            result_label = f"winn{step} ✅"
+        if is_win(direction, entry_price, exit_price):
+            result_label = format_win_label(step)
             post_webhook(
                 {
                     "secret": WEBHOOK_SECRET,
@@ -80,9 +98,10 @@ def run_cycle():
                     "reply_to_message_id": msg_id,
                 }
             )
-            print(f"تم إرسال النتيجة: {result_label}")
+            print(f"نجحت {stage_name} وتم نشر النتيجة: {result_label}")
             return
 
+        print(f"لم تنجح {stage_name} عند السعر {exit_price:.5f}، الانتقال للمرحلة التالية دون نشر نتيجة...")
         entry_price = exit_price
 
     post_webhook(
@@ -93,7 +112,7 @@ def run_cycle():
             "reply_to_message_id": msg_id,
         }
     )
-    print("تم إرسال النتيجة النهائية: 💔 Loss")
+    print("انتهت جميع المراحل (4 دقائق) بخسارة، وتم نشر النتيجة: 💔 Loss")
 
 
 if __name__ == "__main__":
