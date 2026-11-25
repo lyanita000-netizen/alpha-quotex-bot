@@ -1,405 +1,118 @@
-import asyncio
 import logging
 import os
-import threading
-from collections import defaultdict, deque
 from datetime import datetime, timedelta
-from http.server import BaseHTTPRequestHandler, HTTPServer
-import pandas as pd
+from flask import Flask, jsonify, request
 import requests
-from telegram.error import TelegramError
-from telegram.ext import Application, ContextTypes
 
 # ================= إعدادات القناة الأساسية =================
 BOT_TOKEN = "9132434770:AAGulVo-sWXI6Mm_59yVQPXXraoAn-nOTRs"
 CHANNEL_ID = -1003938306672
 AFFILIATE_LINK = "https://broker-qx.pro/sign-up/?lid=2438595"
-RENDER_SERVICE_URL = "https://alpha-quotex-bot.onrender.com"
+WEBHOOK_SECRET = "alpha_qx_2026"
 
-# جميع أزواج العملات المدعومة (الأساس : المقابل)
-PAIRS_LIST = [
-    ("EUR", "USD"),
-    ("GBP", "USD"),
-    ("USD", "JPY"),
-    ("USD", "CHF"),
-    ("USD", "CAD"),
-    ("AUD", "USD"),
-    ("NZD", "USD"),
-    ("EUR", "GBP"),
-    ("EUR", "JPY"),
-    ("EUR", "CHF"),
-    ("EUR", "CAD"),
-    ("EUR", "AUD"),
-    ("EUR", "NZD"),
-    ("GBP", "JPY"),
-    ("GBP", "CHF"),
-    ("GBP", "CAD"),
-    ("GBP", "AUD"),
-    ("GBP", "NZD"),
-    ("AUD", "CAD"),
-    ("AUD", "CHF"),
-    ("AUD", "JPY"),
-    ("AUD", "NZD"),
-    ("CAD", "JPY"),
-    ("CAD", "CHF"),
-    ("CHF", "JPY"),
-    ("NZD", "JPY"),
-    ("NZD", "CAD"),
-    ("NZD", "CHF"),
-]
-
-SCAN_INTERVAL_SECONDS = 60         # فحص السوق وإرسال الصفقات كل دقيقة
-TRADE_DURATION_MINUTES = 5         # مدة كل مرحلة / شمعة (M5)
-MAX_MARTINGALE_STEPS = 3           # إجمالي المراحل (1 أساسية + 2 تعويض = winn1, winn2, winn3 أو Loss)
-SIGNAL_COOLDOWN_MINUTES = 3        # فاصل قصير لتدوير الأزواج بسلاسة
-KEEP_ALIVE_INTERVAL_SECONDS = 480  # تنشيط رابط الخدمة كل 8 دقائق
-MIN_HISTORY_POINTS = 5             # بدء أسرع بعد 5 نقاط سعر متتالية
-MIN_FORECAST_PCT = 60.0            # الحد الأدنى لنسبة التوقع
-
-price_history: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=120))
-last_signal_time: dict[str, datetime] = {}
+app = Flask(__name__)
 
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    format="%(asctime)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
 
 
-# خادم ويب خفيف لقبول الخطة المجانية على Render
-class HealthHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Bot is running")
-
-    def log_message(self, format, *args):
-        pass
-
-
-def start_web_server():
-    port = int(os.environ.get("PORT", 10000))
-    server = HTTPServer(("0.0.0.0", port), HealthHandler)
-    server.serve_forever()
-
-
-def ping_self():
-    try:
-        requests.get(RENDER_SERVICE_URL, timeout=15)
-    except Exception as e:
-        logger.debug("تنشيط الخدمة الذاتي: %s", e)
-
-
-def _extract_pairs_from_eur_rates(eur_rates: dict) -> dict[str, float]:
-    rates_out: dict[str, float] = {}
-    eur_rates = dict(eur_rates)
-    eur_rates["EUR"] = 1.0
-
-    for base, quote in PAIRS_LIST:
-        if base in eur_rates and quote in eur_rates:
-            b_val = float(eur_rates[base])
-            q_val = float(eur_rates[quote])
-            if b_val > 0 and q_val > 0:
-                rates_out[f"{base}{quote}"] = q_val / b_val
-    return rates_out
-
-
-def fetch_rates_snapshot() -> dict[str, float]:
-    # المصدر الأساسي: Frankfurter
-    try:
-        resp = requests.get(
-            "https://api.frankfurter.app/latest?from=EUR",
-            timeout=12,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        rates_out = _extract_pairs_from_eur_rates(data.get("rates", {}))
-        if len(rates_out) >= 10:
-            return rates_out
-    except Exception as e:
-        logger.warning("تعذر جلب الأسعار من المصدر الأساسي: %s", e)
-
-    # مصدر احتياطي تلقائي في حال بطء أو تعذر المصدر الأول
-    try:
-        resp = requests.get(
-            "https://open.er-api.com/v6/latest/EUR",
-            timeout=12,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        rates_out = _extract_pairs_from_eur_rates(data.get("rates", {}))
-        if len(rates_out) >= 10:
-            return rates_out
-    except Exception as e:
-        logger.warning("تعذر جلب الأسعار من المصدر الاحتياطي: %s", e)
-
-    return {}
-
-
-def compute_indicators(prices: list[float]) -> dict | None:
-    if len(prices) < MIN_HISTORY_POINTS:
-        return None
-
-    close = pd.Series(prices, dtype="float64")
-    ema9 = close.ewm(span=9, adjust=False).mean()
-    ema21 = close.ewm(span=21, adjust=False).mean()
-
-    delta = close.diff()
-    gain = delta.clip(lower=0).rolling(window=5, min_periods=1).mean()
-    loss = (-delta.clip(upper=0)).rolling(window=5, min_periods=1).mean()
-    rs = gain / loss.replace(0, float("nan"))
-    rsi = 100 - (100 / (1 + rs))
-
-    curr_price = float(close.iloc[-1])
-    prev_price = float(close.iloc[-2]) if len(close) >= 2 else curr_price
-    curr_ema9 = float(ema9.iloc[-1])
-    curr_ema21 = float(ema21.iloc[-1])
-    prev_ema9 = float(ema9.iloc[-2]) if len(ema9) >= 2 else curr_ema9
-    prev_ema21 = float(ema21.iloc[-2]) if len(ema21) >= 2 else curr_ema21
-    curr_rsi = float(rsi.iloc[-1]) if pd.notna(rsi.iloc[-1]) else 50.0
-
-    return {
-        "price": curr_price,
-        "prev_price": prev_price,
-        "ema9": curr_ema9,
-        "ema21": curr_ema21,
-        "prev_ema9": prev_ema9,
-        "prev_ema21": prev_ema21,
-        "rsi": curr_rsi,
+def send_telegram_message(text: str, reply_to_message_id: int | None = None):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": CHANNEL_ID,
+        "text": text,
+        "disable_web_page_preview": True,
     }
+    if reply_to_message_id is not None:
+        payload["reply_to_message_id"] = reply_to_message_id
+
+    resp = requests.post(url, json=payload, timeout=15)
+    resp.raise_for_status()
+    return resp.json()
 
 
-def analyze_trade_signal(pair_name: str, prices: list[float]) -> dict | None:
-    ind = compute_indicators(prices)
-    if not ind:
-        return None
+@app.route("/", methods=["GET"])
+def home():
+    return "Alpha Quotex Webhook Server is Active!", 200
 
-    curr_price = ind["price"]
-    prev_price = ind["prev_price"]
-    curr_ema9 = ind["ema9"]
-    curr_ema21 = ind["ema21"]
-    prev_ema9 = ind["prev_ema9"]
-    prev_ema21 = ind["prev_ema21"]
-    curr_rsi = ind["rsi"]
 
-    bullish_score = 0.0
-    bearish_score = 0.0
+@app.route("/webhook", methods=["POST"])
+def tradingview_webhook():
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"status": "error", "message": "No JSON received"}), 400
 
-    if curr_ema9 >= curr_ema21:
-        bullish_score += 2.0
+    if data.get("secret") != WEBHOOK_SECRET:
+        return jsonify({"status": "unauthorized"}), 401
+
+    msg_type = str(data.get("type", "signal")).strip().lower()
+
+    # دعم إرسال نتيجة الصفقة كردّ بعد انتهاء دورة الصفقة ومحاولات التعويض
+    if msg_type == "result":
+        result_text = str(data.get("result", "")).strip()
+        reply_to = data.get("reply_to_message_id")
+        if not result_text:
+            return jsonify({"status": "error", "message": "Missing result text"}), 400
+
+        reply_id = int(reply_to) if str(reply_to).isdigit() else None
+        tg_resp = send_telegram_message(result_text, reply_to_message_id=reply_id)
+        logger.info("تم إرسال نتيجة الصفقة: %s", result_text)
+        return jsonify({"status": "result_sent", "telegram": tg_resp}), 200
+
+    pair = str(data.get("pair", "EURUSD")).strip().upper()
+    direction = str(data.get("direction", "call")).strip().lower()
+    timeframe = str(data.get("timeframe", "M5")).strip().upper()
+    forecast_raw = data.get("forecast", "75.00")
+    price = str(data.get("price", "")).strip()
+
+    try:
+        forecast_val = float(forecast_raw)
+        forecast_formatted = f"{forecast_val:.2f}"
+    except (ValueError, TypeError):
+        forecast_formatted = str(forecast_raw)
+
+    if direction in ["buy", "call", "up", "long"]:
+        arrow = "🔼"
+        dir_label = "call"
+        tend = "Buy"
     else:
-        bearish_score += 2.0
+        arrow = "🔽"
+        dir_label = "put"
+        tend = "Sell"
 
-    if prev_ema9 <= prev_ema21 and curr_ema9 > curr_ema21:
-        bullish_score += 2.5
-    elif prev_ema9 >= prev_ema21 and curr_ema9 < curr_ema21:
-        bearish_score += 2.5
+    # احتساب توقيت تنفيذ الصفقة بدقة من الساعة الحالية
+    exec_time = (datetime.now() + timedelta(minutes=1)).strftime("%H:%M:%S")
 
-    if curr_price >= prev_price:
-        bullish_score += 1.5
-    else:
-        bearish_score += 1.5
-
-    if curr_rsi >= 50.0:
-        bullish_score += min(3.0, (curr_rsi - 50.0) * 0.25)
-    else:
-        bearish_score += min(3.0, (50.0 - curr_rsi) * 0.25)
-
-    if bullish_score >= bearish_score:
-        forecast = min(95.0, max(MIN_FORECAST_PCT, round(62.0 + bullish_score * 3.2, 2)))
-        return {
-            "direction": "call",
-            "arrow": "🔼",
-            "tend": "Buy",
-            "forecast": forecast,
-            "entry_price": curr_price,
-        }
-    else:
-        forecast = min(95.0, max(MIN_FORECAST_PCT, round(62.0 + bearish_score * 3.2, 2)))
-        return {
-            "direction": "put",
-            "arrow": "🔽",
-            "tend": "Sell",
-            "forecast": forecast,
-            "entry_price": curr_price,
-        }
-
-
-async def verify_and_post_result(context: ContextTypes.DEFAULT_TYPE):
-    """يتابع الصفقة عبر المراحل المحددة ويرسل النتيجة النهائية بعد اكتمالها أو عند التحقق."""
-    data = context.job.data
-    pair_name = data["pair_name"]
-    entry_price = data["entry_price"]
-    direction = data["direction"]
-    message_id = data["message_id"]
-    step = data.get("step", 1)
-
-    snapshot = await asyncio.to_thread(fetch_rates_snapshot)
-    current_price = snapshot.get(pair_name)
-    if current_price is None and price_history[pair_name]:
-        current_price = price_history[pair_name][-1]
-    if current_price is not None:
-        price_history[pair_name].append(current_price)
-
-    # فحص تحقق الصفقة في المرحلة الحالية
-    is_win = False
-    if current_price is not None:
-        is_win = (direction == "call" and current_price > entry_price) or (
-            direction == "put" and current_price < entry_price
-        )
-
-    if is_win:
-        try:
-            await context.bot.send_message(
-                chat_id=CHANNEL_ID,
-                text=f"winn{step} ✅",
-                reply_to_message_id=message_id,
-            )
-            logger.info("تم إرسال نتيجة الفوز winn%d لـ %s", step, pair_name)
-        except TelegramError as e:
-            logger.warning("تعذر نشر نتيجة الفوز في القناة: %s", e)
-        return
-
-    # إذا لم تتحقق بعد، نكمل محاولات التعويض ولا نرسل النتيجة النهائية إلا بعد انتهائها
-    if step < MAX_MARTINGALE_STEPS:
-        next_step = step + 1
-        next_entry = current_price if current_price is not None else entry_price
-        context.job_queue.run_once(
-            verify_and_post_result,
-            when=TRADE_DURATION_MINUTES * 60,
-            data={
-                "pair_name": pair_name,
-                "entry_price": next_entry,
-                "direction": direction,
-                "message_id": message_id,
-                "step": next_step,
-            },
-        )
-        logger.info(
-            "الصفقة %s ما زالت قيد المتابعة (اكتملت المرحلة %d من %d، بانتظار المرحلة %d)...",
-            pair_name,
-            step,
-            MAX_MARTINGALE_STEPS,
-            next_step,
-        )
-    else:
-        # إرسال النتيجة النهائية فقط بعد اكتمال جميع محاولات التعويض المقررة
-        try:
-            await context.bot.send_message(
-                chat_id=CHANNEL_ID,
-                text="💔 Loss",
-                reply_to_message_id=message_id,
-            )
-            logger.info("تم إرسال النتيجة النهائية 💔 Loss لـ %s بعد اكتمال %d مراحل", pair_name, MAX_MARTINGALE_STEPS)
-        except TelegramError as e:
-            logger.warning("تعذر نشر نتيجة الخسارة في القناة: %s", e)
-
-
-async def scan_market_job(context: ContextTypes.DEFAULT_TYPE):
-    now = datetime.now()
-    snapshot = await asyncio.to_thread(fetch_rates_snapshot)
-    if not snapshot:
-        logger.warning("لم يتم استلام بيانات أسعار في هذه الدورة، سيعاد المحاولة في الدورة القادمة.")
-        return
-
-    for pair_name, current_price in snapshot.items():
-        price_history[pair_name].append(current_price)
-
-    ready_pairs = sum(
-        1 for pair_name, _ in PAIRS_LIST if len(price_history[pair_name]) >= MIN_HISTORY_POINTS
-    )
-    if ready_pairs == 0:
-        logger.info("جاري تجميع نقاط الأسعار الأولية (%d نقطة مطلوبة)...", MIN_HISTORY_POINTS)
-        return
-
-    best_candidate: tuple[float, str, dict] | None = None
-
-    for pair_name, _ in PAIRS_LIST:
-        history = list(price_history[pair_name])
-        if len(history) < MIN_HISTORY_POINTS:
-            continue
-
-        last_sig = last_signal_time.get(pair_name)
-        if last_sig and (now - last_sig) < timedelta(minutes=SIGNAL_COOLDOWN_MINUTES):
-            continue
-
-        signal = analyze_trade_signal(pair_name, history)
-        if not signal:
-            continue
-
-        if best_candidate is None or signal["forecast"] > best_candidate[0]:
-            best_candidate = (signal["forecast"], pair_name, signal)
-
-    if best_candidate is None:
-        return
-
-    _, pair_name, signal = best_candidate
-    exec_time = (now + timedelta(minutes=1)).strftime("%H:%M:%S")
     post_text = (
-        f"💳 {pair_name}\n"
-        f"🔥 M{TRADE_DURATION_MINUTES}\n"
+        f"💳 {pair}\n"
+        f"🔥 {timeframe}\n"
         f"⏳ {exec_time}\n"
-        f"{signal['arrow']} {signal['direction']}\n\n"
-        f"🚦 Tend: {signal['tend']}\n"
-        f"📈 Forecast: {signal['forecast']:.2f}%\n"
-        f"🎯 Entry: {signal['entry_price']:.5f}\n\n"
+        f"{arrow} {dir_label}\n\n"
+        f"🚦 Tend: {tend}\n"
+        f"📈 Forecast: {forecast_formatted}%\n"
+        f"🎯 Entry: {price}\n\n"
         f"🔗 REGISTER HERE: {AFFILIATE_LINK}"
     )
 
     try:
-        sent_msg = await context.bot.send_message(
-            chat_id=CHANNEL_ID,
-            text=post_text,
-            disable_web_page_preview=True,
-        )
-        last_signal_time[pair_name] = now
-        logger.info(
-            "تم نشر صفقة في القناة: %s (%s) بنسبة %.2f%%",
-            pair_name,
-            signal["direction"],
-            signal["forecast"],
-        )
-
-        context.job_queue.run_once(
-            verify_and_post_result,
-            when=TRADE_DURATION_MINUTES * 60,
-            data={
-                "pair_name": pair_name,
-                "entry_price": signal["entry_price"],
-                "direction": signal["direction"],
-                "message_id": sent_msg.message_id,
-                "step": 1,
-            },
-        )
-    except TelegramError as e:
-        logger.error("فشل نشر الصفقة في القناة: %s", e)
-
-
-async def keep_alive_job(context: ContextTypes.DEFAULT_TYPE):
-    await asyncio.to_thread(ping_self)
-
-
-def main():
-    threading.Thread(target=start_web_server, daemon=True).start()
-
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
-    app = Application.builder().token(BOT_TOKEN).build()
-    app.job_queue.run_repeating(
-        scan_market_job,
-        interval=SCAN_INTERVAL_SECONDS,
-        first=5,
-    )
-    app.job_queue.run_repeating(
-        keep_alive_job,
-        interval=KEEP_ALIVE_INTERVAL_SECONDS,
-        first=180,
-    )
-
-    logger.info("🤖 نظام الصفقات يعمل الآن تلقائياً على قناتك...")
-    app.run_polling()
+        tg_resp = send_telegram_message(post_text)
+        sent_msg_id = tg_resp.get("result", {}).get("message_id")
+        logger.info("تم نشر إشارة TradingView: %s (%s)", pair, dir_label)
+        return jsonify(
+            {
+                "status": "sent",
+                "message_id": sent_msg_id,
+                "telegram": tg_resp,
+            }
+        ), 200
+    except Exception as e:
+        logger.error("فشل إرسال الرسالة إلى تيليغرام: %s", e)
+        return jsonify({"status": "error", "details": str(e)}), 500
 
 
 if __name__ == "__main__":
-    main()
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
