@@ -54,7 +54,7 @@ MAX_MARTINGALE_STEPS = 3           # أقصى عدد لمحاولات التعو
 SIGNAL_COOLDOWN_MINUTES = 12       # انتظار 12 دقيقة قبل تكرار صفقة نفس الزوج
 KEEP_ALIVE_INTERVAL_SECONDS = 480  # تنشيط رابط الخدمة كل 8 دقائق لتقليل الخمول
 MIN_HISTORY_POINTS = 10            # عدد نقاط السعر المطلوبة للبدء السريع
-MIN_FORECAST_PCT = 76.0            # الحد الأدنى لنسبة التوقع لقبول الصفقة القوية
+MIN_FORECAST_PCT = 60.0            # الحد الأدنى لنسبة التوقع لقبول الصفقة
 
 price_history: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=120))
 last_signal_time: dict[str, datetime] = {}
@@ -158,11 +158,13 @@ def analyze_trade_signal(pair_name: str, prices: list[float]) -> dict | None:
     curr_rsi = ind["rsi"]
 
     bullish_cross_or_trend = (
-        (prev_ema9 <= prev_ema21 and curr_ema9 > curr_ema21 and curr_rsi >= 50.0)
-        or (curr_ema9 > curr_ema21 and curr_price >= curr_ema9 and curr_price >= prev_price and curr_rsi >= 52.0)
+        (prev_ema9 <= prev_ema21 and curr_ema9 > curr_ema21 and curr_rsi >= 48.0)
+        or (curr_ema9 > curr_ema21 and curr_price >= prev_price and curr_rsi >= 50.0)
     )
     if bullish_cross_or_trend:
-        forecast = min(96.0, round(74.0 + max(0.0, curr_rsi - 45.0) * 0.8 + (1.5 if curr_ema9 > curr_ema21 else 0.0), 2))
+        ema_bonus = 2.0 if curr_ema9 > curr_ema21 else 0.0
+        rsi_bonus = max(0.0, curr_rsi - 45.0) * 0.85
+        forecast = min(96.0, round(74.0 + rsi_bonus + ema_bonus, 2))
         if forecast < MIN_FORECAST_PCT:
             return None
         return {
@@ -174,11 +176,13 @@ def analyze_trade_signal(pair_name: str, prices: list[float]) -> dict | None:
         }
 
     bearish_cross_or_trend = (
-        (prev_ema9 >= prev_ema21 and curr_ema9 < curr_ema21 and curr_rsi <= 50.0)
-        or (curr_ema9 < curr_ema21 and curr_price <= curr_ema9 and curr_price <= prev_price and curr_rsi <= 48.0)
+        (prev_ema9 >= prev_ema21 and curr_ema9 < curr_ema21 and curr_rsi <= 52.0)
+        or (curr_ema9 < curr_ema21 and curr_price <= prev_price and curr_rsi <= 50.0)
     )
     if bearish_cross_or_trend:
-        forecast = min(96.0, round(74.0 + max(0.0, 55.0 - curr_rsi) * 0.8 + (1.5 if curr_ema9 < curr_ema21 else 0.0), 2))
+        ema_bonus = 2.0 if curr_ema9 < curr_ema21 else 0.0
+        rsi_bonus = max(0.0, 55.0 - curr_rsi) * 0.85
+        forecast = min(96.0, round(74.0 + rsi_bonus + ema_bonus, 2))
         if forecast < MIN_FORECAST_PCT:
             return None
         return {
@@ -281,6 +285,15 @@ async def scan_market_job(context: ContextTypes.DEFAULT_TYPE):
             best_candidate = (signal["forecast"], pair_name, signal)
 
     if best_candidate is None:
+        ready_pairs = sum(
+            1 for pair_name, _ in PAIRS_LIST if len(price_history[pair_name]) >= MIN_HISTORY_POINTS
+        )
+        logger.info(
+            "فحص السوق مكتمل: الأزواج الجاهزة=%d/%d ولم تتجاوز أي فرصة عتبة %.1f%%",
+            ready_pairs,
+            len(PAIRS_LIST),
+            MIN_FORECAST_PCT,
+        )
         return
 
     _, pair_name, signal = best_candidate
@@ -304,7 +317,7 @@ async def scan_market_job(context: ContextTypes.DEFAULT_TYPE):
         )
         last_signal_time[pair_name] = now
         logger.info(
-            "تم نشر صفقة عالية التوقع: %s (%s) بنسبة %.2f%%",
+            "تم نشر صفقة: %s (%s) بنسبة %.2f%%",
             pair_name,
             signal["direction"],
             signal["forecast"],
@@ -347,7 +360,7 @@ def main():
         first=180,
     )
 
-    logger.info("🤖 نظام الصفقات عالية التوقع يعمل الآن تلقائياً على قناتك...")
+    logger.info("🤖 نظام الصفقات يعمل الآن تلقائياً على قناتك...")
     app.run_polling()
 
 
