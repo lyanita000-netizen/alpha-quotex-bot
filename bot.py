@@ -49,11 +49,11 @@ PAIRS_LIST = [
 ]
 
 SCAN_INTERVAL_SECONDS = 60         # فحص السوق وإرسال الصفقات كل دقيقة
-TRADE_DURATION_MINUTES = 5         # مدة الصفقة (M5)
-MAX_MARTINGALE_STEPS = 3           # أقصى عدد لمحاولات التعويض (winn1, winn2, winn3)
+TRADE_DURATION_MINUTES = 5         # مدة كل مرحلة / شمعة (M5)
+MAX_MARTINGALE_STEPS = 3           # إجمالي المراحل (1 أساسية + 2 تعويض = winn1, winn2, winn3 أو Loss)
 SIGNAL_COOLDOWN_MINUTES = 3        # فاصل قصير لتدوير الأزواج بسلاسة
 KEEP_ALIVE_INTERVAL_SECONDS = 480  # تنشيط رابط الخدمة كل 8 دقائق
-MIN_HISTORY_POINTS = 10            # عدد نقاط السعر المطلوبة للبدء
+MIN_HISTORY_POINTS = 5             # بدء أسرع بعد 5 نقاط سعر متتالية
 MIN_FORECAST_PCT = 60.0            # الحد الأدنى لنسبة التوقع
 
 price_history: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=120))
@@ -90,25 +90,50 @@ def ping_self():
         logger.debug("تنشيط الخدمة الذاتي: %s", e)
 
 
-def fetch_rates_snapshot() -> dict[str, float]:
+def _extract_pairs_from_eur_rates(eur_rates: dict) -> dict[str, float]:
     rates_out: dict[str, float] = {}
+    eur_rates = dict(eur_rates)
+    eur_rates["EUR"] = 1.0
+
+    for base, quote in PAIRS_LIST:
+        if base in eur_rates and quote in eur_rates:
+            b_val = float(eur_rates[base])
+            q_val = float(eur_rates[quote])
+            if b_val > 0 and q_val > 0:
+                rates_out[f"{base}{quote}"] = q_val / b_val
+    return rates_out
+
+
+def fetch_rates_snapshot() -> dict[str, float]:
+    # المصدر الأساسي: Frankfurter
     try:
         resp = requests.get(
             "https://api.frankfurter.app/latest?from=EUR",
-            timeout=15,
+            timeout=12,
         )
         resp.raise_for_status()
         data = resp.json()
-        eur_rates = data.get("rates", {})
-        eur_rates["EUR"] = 1.0
-
-        for base, quote in PAIRS_LIST:
-            if base in eur_rates and quote in eur_rates:
-                pair_name = f"{base}{quote}"
-                rates_out[pair_name] = float(eur_rates[quote]) / float(eur_rates[base])
+        rates_out = _extract_pairs_from_eur_rates(data.get("rates", {}))
+        if len(rates_out) >= 10:
+            return rates_out
     except Exception as e:
-        logger.warning("تعذر جلب أسعار الصرف اللحظية: %s", e)
-    return rates_out
+        logger.warning("تعذر جلب الأسعار من المصدر الأساسي: %s", e)
+
+    # مصدر احتياطي تلقائي في حال بطء أو تعذر المصدر الأول
+    try:
+        resp = requests.get(
+            "https://open.er-api.com/v6/latest/EUR",
+            timeout=12,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        rates_out = _extract_pairs_from_eur_rates(data.get("rates", {}))
+        if len(rates_out) >= 10:
+            return rates_out
+    except Exception as e:
+        logger.warning("تعذر جلب الأسعار من المصدر الاحتياطي: %s", e)
+
+    return {}
 
 
 def compute_indicators(prices: list[float]) -> dict | None:
@@ -120,8 +145,8 @@ def compute_indicators(prices: list[float]) -> dict | None:
     ema21 = close.ewm(span=21, adjust=False).mean()
 
     delta = close.diff()
-    gain = delta.clip(lower=0).rolling(window=7, min_periods=1).mean()
-    loss = (-delta.clip(upper=0)).rolling(window=7, min_periods=1).mean()
+    gain = delta.clip(lower=0).rolling(window=5, min_periods=1).mean()
+    loss = (-delta.clip(upper=0)).rolling(window=5, min_periods=1).mean()
     rs = gain / loss.replace(0, float("nan"))
     rsi = 100 - (100 / (1 + rs))
 
@@ -157,7 +182,6 @@ def analyze_trade_signal(pair_name: str, prices: list[float]) -> dict | None:
     prev_ema21 = ind["prev_ema21"]
     curr_rsi = ind["rsi"]
 
-    # تحديد الاتجاه الأساسي بناءً على المتوسطات والزخم اللحظي لضمان استمرارية الإشارات
     bullish_score = 0.0
     bearish_score = 0.0
 
@@ -202,6 +226,7 @@ def analyze_trade_signal(pair_name: str, prices: list[float]) -> dict | None:
 
 
 async def verify_and_post_result(context: ContextTypes.DEFAULT_TYPE):
+    """يتابع الصفقة عبر المراحل المحددة ويرسل النتيجة النهائية بعد اكتمالها أو عند التحقق."""
     data = context.job.data
     pair_name = data["pair_name"]
     entry_price = data["entry_price"]
@@ -216,21 +241,26 @@ async def verify_and_post_result(context: ContextTypes.DEFAULT_TYPE):
     if current_price is not None:
         price_history[pair_name].append(current_price)
 
+    # فحص تحقق الصفقة في المرحلة الحالية
+    is_win = False
     if current_price is not None:
         is_win = (direction == "call" and current_price > entry_price) or (
             direction == "put" and current_price < entry_price
         )
-        if is_win:
-            try:
-                await context.bot.send_message(
-                    chat_id=CHANNEL_ID,
-                    text=f"winn{step} ✅",
-                    reply_to_message_id=message_id,
-                )
-            except TelegramError as e:
-                logger.warning("تعذر نشر نتيجة الفوز في القناة: %s", e)
-            return
 
+    if is_win:
+        try:
+            await context.bot.send_message(
+                chat_id=CHANNEL_ID,
+                text=f"winn{step} ✅",
+                reply_to_message_id=message_id,
+            )
+            logger.info("تم إرسال نتيجة الفوز winn%d لـ %s", step, pair_name)
+        except TelegramError as e:
+            logger.warning("تعذر نشر نتيجة الفوز في القناة: %s", e)
+        return
+
+    # إذا لم تتحقق بعد، نكمل محاولات التعويض ولا نرسل النتيجة النهائية إلا بعد انتهائها
     if step < MAX_MARTINGALE_STEPS:
         next_step = step + 1
         next_entry = current_price if current_price is not None else entry_price
@@ -246,18 +276,21 @@ async def verify_and_post_result(context: ContextTypes.DEFAULT_TYPE):
             },
         )
         logger.info(
-            "لم تتحقق الصفقة في المحاولة %d لـ %s، بانتظار المحاولة %d...",
-            step,
+            "الصفقة %s ما زالت قيد المتابعة (اكتملت المرحلة %d من %d، بانتظار المرحلة %d)...",
             pair_name,
+            step,
+            MAX_MARTINGALE_STEPS,
             next_step,
         )
     else:
+        # إرسال النتيجة النهائية فقط بعد اكتمال جميع محاولات التعويض المقررة
         try:
             await context.bot.send_message(
                 chat_id=CHANNEL_ID,
                 text="💔 Loss",
                 reply_to_message_id=message_id,
             )
+            logger.info("تم إرسال النتيجة النهائية 💔 Loss لـ %s بعد اكتمال %d مراحل", pair_name, MAX_MARTINGALE_STEPS)
         except TelegramError as e:
             logger.warning("تعذر نشر نتيجة الخسارة في القناة: %s", e)
 
@@ -266,6 +299,7 @@ async def scan_market_job(context: ContextTypes.DEFAULT_TYPE):
     now = datetime.now()
     snapshot = await asyncio.to_thread(fetch_rates_snapshot)
     if not snapshot:
+        logger.warning("لم يتم استلام بيانات أسعار في هذه الدورة، سيعاد المحاولة في الدورة القادمة.")
         return
 
     for pair_name, current_price in snapshot.items():
