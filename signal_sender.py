@@ -34,7 +34,7 @@ MIN_FORECAST = float(os.environ.get("MIN_FORECAST", "50"))        # الحد ا�
 MAX_SIGNALS_PER_DAY = int(os.environ.get("MAX_SIGNALS_PER_DAY", "8"))
 COOLDOWN_MIN = int(os.environ.get("COOLDOWN_MIN", "30"))          # فاصل بين إشارتين لنفس الزوج
 MAX_DELAY_MIN = int(os.environ.get("MAX_DELAY_MIN", "3"))         # أقصى تأخير مسموح بعد إغلاق الشمعة
-TZ_OFFSET = int(os.environ.get("TZ_OFFSET", "1"))                 # فرق التوقيت المعروض (UTC+1)
+TZ_OFFSET = int(os.environ.get("TZ_OFFSET", "-7"))                 # فرق التوقيت المعروض (UTC+1)
 STATE_FILE = Path(os.environ.get("STATE_FILE", "state.json"))
 
 CANDLE_MIN = 5            # فريم M5، والصفقة مدتها شمعة واحدة (5 دقائق)
