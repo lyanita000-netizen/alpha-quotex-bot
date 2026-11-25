@@ -1,17 +1,20 @@
 """
-بوت إشارات تلقائي لقناة تيليجرام.
+بوت إشارات تلقائي لقناة تيليجرام (يعمل كل 5 دقائق عبر GitHub Actions).
 
-كل مرة يعمل فيها السكربت (كل 5 دقائق عبر GitHub Actions):
-  1) يفحص الصفقات المعلّقة: إذا انتهت، يقارن سعر الدخول بسعر الإغلاق الحقيقي
-     وينشر النتيجة (WIN / Loss / Draw) كرد على رسالة الإشارة نفسها.
-  2) يحلل الأزواج ببيانات سعر حقيقية، وإذا ظهرت إشارة قوية يعتمد نسبتها على
-     نتيجة اختبار تاريخي (backtest) للاستراتيجية نفسها، وينشرها إن تجاوزت الحد.
+كل تشغيل:
+  1) يفحص الصفقات المعلّقة: إذا انتهت، يقارن سعر الدخول بسعر الإغلاق الحقيقي.
+       - ربح  → يرد WIN ✅ مع رقم المرحلة (¹ من المحاولة الأولى، ² من الثانية...)
+       - خسارة → يرد Loss 💔، وإن بقيت مراحل تعويض ينشر إشارة تعويض على نفس الزوج
+                 والاتجاه. الخسارة الأولى تبقى مسجّلة ولا تُخفى.
+  2) يحلل عدة أزواج، ويختار أقوى الإشارات (حسب نسبة الاختبار التاريخي) مع توزيعها
+     على عملات مختلفة، وينشرها إن تجاوزت الحد.
 
 كل الإعدادات تأتي من متغيرات البيئة (Secrets) وليس من الكود.
 """
 import json
 import logging
 import os
+import random
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -25,16 +28,23 @@ CHANNEL_ID = os.environ.get("CHANNEL_ID", "")
 AFFILIATE_LINK = os.environ.get(
     "AFFILIATE_LINK", "https://broker-qx.pro/sign-up/?lid=2438595"
 )
+DEFAULT_PAIRS = (
+    "EURUSD,GBPUSD,AUDUSD,USDJPY,USDCAD,USDCHF,"
+    "NZDUSD,EURJPY,GBPJPY,EURGBP,AUDCAD,EURAUD"
+)
 PAIRS = [
     p.strip().upper()
-    for p in os.environ.get("PAIRS", "EURUSD,GBPUSD,AUDUSD,USDJPY,USDCAD").split(",")
+    for p in os.environ.get("PAIRS", DEFAULT_PAIRS).split(",")
     if p.strip()
 ]
-MIN_FORECAST = float(os.environ.get("MIN_FORECAST", "50"))        # الحد الأدنى للنسبة %
+MIN_FORECAST = float(os.environ.get("MIN_FORECAST", "50"))          # الحد الأدنى للنسبة %
 MAX_SIGNALS_PER_DAY = int(os.environ.get("MAX_SIGNALS_PER_DAY", "8"))
-COOLDOWN_MIN = int(os.environ.get("COOLDOWN_MIN", "30"))          # فاصل بين إشارتين لنفس الزوج
-MAX_DELAY_MIN = int(os.environ.get("MAX_DELAY_MIN", "3"))         # أقصى تأخير مسموح بعد إغلاق الشمعة
-TZ_OFFSET = int(os.environ.get("TZ_OFFSET", "-7"))                 # فرق التوقيت المعروض (UTC+1)
+MAX_NEW_PER_RUN = int(os.environ.get("MAX_NEW_PER_RUN", "2"))       # أقصى إشارات جديدة في التشغيل
+MAX_PER_PAIR_PER_DAY = int(os.environ.get("MAX_PER_PAIR_PER_DAY", "2"))  # للتنويع بين العملات
+MAX_STEPS = int(os.environ.get("MAX_STEPS", "2"))                   # الإشارة الأصلية + التعويض
+COOLDOWN_MIN = int(os.environ.get("COOLDOWN_MIN", "30"))            # فاصل بين إشارتين لنفس الزوج
+MAX_DELAY_MIN = int(os.environ.get("MAX_DELAY_MIN", "3"))           # أقصى تأخير بعد إغلاق الشمعة
+TZ_OFFSET = int(os.environ.get("TZ_OFFSET", "-7"))                  # توقيت منصة Quotex (UTC-7)
 STATE_FILE = Path(os.environ.get("STATE_FILE", "state.json"))
 
 CANDLE_MIN = 5            # فريم M5، والصفقة مدتها شمعة واحدة (5 دقائق)
@@ -42,6 +52,8 @@ RSI_PERIOD = 14
 RSI_LOW = 30
 RSI_HIGH = 70
 MIN_SAMPLES = 15          # أقل عدد صفقات في الباكتست حتى نثق بالنسبة
+
+SUPERSCRIPT = {1: "¹", 2: "²", 3: "³", 4: "⁴", 5: "⁵"}
 
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
 log = logging.getLogger("signals")
@@ -92,7 +104,7 @@ def decide_result(side: str, entry: float, exit_price: float) -> str:
 
 # ================= البيانات =================
 def fetch_candles(pair: str):
-    """شموع M5 الحقيقية المغلقة فقط، بتوقيت UTC (الفهرس = وقت فتح الشمعة)."""
+    """شموع M5 الحقيقية، بتوقيت UTC (الفهرس = وقت فتح الشمعة)."""
     import yfinance as yf
 
     df = yf.download(
@@ -136,7 +148,7 @@ def load_state() -> dict:
             return json.loads(STATE_FILE.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             log.warning("ملف الحالة تالف، سيتم البدء من جديد")
-    return {"pending": [], "last_signal": {}, "daily": {"date": "", "count": 0}}
+    return {"pending": [], "last_signal": {}, "daily": {"date": "", "count": 0, "pairs": {}}}
 
 
 def save_state(state: dict) -> None:
@@ -147,13 +159,33 @@ def local_time(dt: datetime) -> str:
     return (dt + timedelta(hours=TZ_OFFSET)).strftime("%H:%M:%S")
 
 
-# ================= النتائج =================
-RESULT_TEXT = {"win": "WIN ✅", "loss": "Loss 💔", "draw": "Draw ➖"}
+# ================= نص الإشارة =================
+def build_signal_text(pair, side, close_time, entry, step, rate=None, samples=None) -> str:
+    digits = 3 if pair.endswith("JPY") else 5
+    arrow, tend = ("🔼", "Buy") if side == "call" else ("🔽", "Sell")
+    lines = [
+        f"💳 {pair}",
+        f"🔥 M{CANDLE_MIN}",
+        f"⏳ {local_time(close_time)}",
+        f"{arrow} {side}",
+        "",
+    ]
+    if step == 1:
+        lines += [
+            f"🚦 Tend: {tend}",
+            f"📈 Forecast: {rate:.2f}% (backtest: {samples} trades)",
+        ]
+    else:
+        lines += [f"🔁 Compensation {step - 1}", f"🚦 Tend: {tend}"]
+    lines += [f"🎯 Entry: {entry:.{digits}f}", "", f"🔗 REGISTER HERE: {AFFILIATE_LINK}"]
+    return "\n".join(lines)
 
 
+# ================= النتائج والتعويض =================
 def check_results(state: dict, now: datetime, get_df) -> None:
     still_pending = []
-    for sig in state["pending"]:
+    for sig in list(state["pending"]):
+        step = int(sig.get("step", 1))
         open_ts = datetime.fromisoformat(sig["candle_open"])
         result_open = open_ts + timedelta(minutes=CANDLE_MIN)
         ready_at = result_open + timedelta(minutes=CANDLE_MIN, seconds=30)
@@ -174,25 +206,68 @@ def check_results(state: dict, now: datetime, get_df) -> None:
 
         exit_price = float(row["Close"])
         outcome = decide_result(sig["side"], sig["entry"], exit_price)
+
+        if outcome == "win":
+            text = f"WIN ✅{SUPERSCRIPT.get(step, '')}"
+        elif outcome == "draw":
+            text = "Draw ➖"
+        else:
+            text = "Loss 💔"
+
         try:
-            send_telegram(RESULT_TEXT[outcome], reply_to=sig["message_id"])
-            log.info("نتيجة %s: %s (دخول %s ← خروج %s)", sig["pair"], outcome, sig["entry"], exit_price)
+            send_telegram(text, reply_to=sig["message_id"])
+            log.info("نتيجة %s (مرحلة %d): %s (دخول %s ← خروج %s)",
+                     sig["pair"], step, outcome, sig["entry"], exit_price)
         except Exception as exc:
             log.error("فشل إرسال النتيجة: %s", exc)
             still_pending.append(sig)
+            continue
+
+        # تعويض: فقط بعد خسارة، وإن بقيت مراحل، وبسعر طازج
+        if outcome != "loss" or step >= MAX_STEPS:
+            continue
+        close_time = result_open + timedelta(minutes=CANDLE_MIN)
+        if now - close_time > timedelta(minutes=MAX_DELAY_MIN):
+            log.info("%s: تعذر نشر التعويض لأن السعر أصبح قديماً", sig["pair"])
+            continue
+        try:
+            text = build_signal_text(sig["pair"], sig["side"], close_time, exit_price, step + 1)
+            resp = send_telegram(text, reply_to=sig["message_id"])
+        except Exception as exc:
+            log.error("فشل نشر التعويض: %s", exc)
+            continue
+        still_pending.append(
+            {
+                "pair": sig["pair"],
+                "side": sig["side"],
+                "entry": exit_price,
+                "candle_open": result_open.isoformat(),
+                "message_id": resp.get("result", {}).get("message_id"),
+                "step": step + 1,
+            }
+        )
+        log.info("تم نشر تعويض %d لـ %s", step, sig["pair"])
     state["pending"] = still_pending
 
 
 # ================= الإشارات الجديدة =================
 def publish_signals(state: dict, now: datetime, get_df) -> None:
     today = (now + timedelta(hours=TZ_OFFSET)).strftime("%Y-%m-%d")
-    if state["daily"]["date"] != today:
-        state["daily"] = {"date": today, "count": 0}
+    if state["daily"].get("date") != today:
+        state["daily"] = {"date": today, "count": 0, "pairs": {}}
+    daily = state["daily"]
+    daily.setdefault("pairs", {})
 
-    for pair in PAIRS:
-        if state["daily"]["count"] >= MAX_SIGNALS_PER_DAY:
-            log.info("تم بلوغ الحد اليومي للإشارات")
-            return
+    busy = {s["pair"] for s in state["pending"]}      # زوج فيه صفقة/تعويض قيد الانتظار
+    pairs = PAIRS[:]
+    random.shuffle(pairs)
+
+    candidates = []
+    for pair in pairs:
+        if pair in busy:
+            continue
+        if daily["pairs"].get(pair, 0) >= MAX_PER_PAIR_PER_DAY:
+            continue
 
         df = get_df(pair)
         if df is None or len(df) < RSI_PERIOD * 5:
@@ -221,38 +296,47 @@ def publish_signals(state: dict, now: datetime, get_df) -> None:
             log.info("%s: إشارة %s مرفوضة (نسبة %.1f%% من %d صفقة)", pair, side, rate, samples)
             continue
 
-        entry = float(close.iloc[-1])
-        digits = 3 if pair.endswith("JPY") else 5
-        arrow, tend = ("🔼", "Buy") if side == "call" else ("🔽", "Sell")
-        text = (
-            f"💳 {pair}\n"
-            f"🔥 M{CANDLE_MIN}\n"
-            f"⏳ {local_time(close_time)}\n"
-            f"{arrow} {side}\n\n"
-            f"🚦 Tend: {tend}\n"
-            f"📈 Forecast: {rate:.2f}% (backtest: {samples} trades)\n"
-            f"🎯 Entry: {entry:.{digits}f}\n\n"
-            f"🔗 REGISTER HERE: {AFFILIATE_LINK}"
+        candidates.append(
+            {
+                "pair": pair, "side": side, "rate": rate, "samples": samples,
+                "entry": float(close.iloc[-1]), "last_open": last_open,
+                "close_time": close_time,
+            }
+        )
+
+    candidates.sort(key=lambda c: c["rate"], reverse=True)   # الأقوى أولاً
+    published = 0
+    for c in candidates:
+        if daily["count"] >= MAX_SIGNALS_PER_DAY:
+            log.info("تم بلوغ الحد اليومي للإشارات")
+            break
+        if published >= MAX_NEW_PER_RUN:
+            break
+
+        text = build_signal_text(
+            c["pair"], c["side"], c["close_time"], c["entry"], 1, c["rate"], c["samples"]
         )
         try:
             resp = send_telegram(text)
         except Exception as exc:
-            log.error("فشل نشر إشارة %s: %s", pair, exc)
+            log.error("فشل نشر إشارة %s: %s", c["pair"], exc)
             continue
 
-        message_id = resp.get("result", {}).get("message_id")
         state["pending"].append(
             {
-                "pair": pair,
-                "side": side,
-                "entry": entry,
-                "candle_open": last_open.isoformat(),
-                "message_id": message_id,
+                "pair": c["pair"],
+                "side": c["side"],
+                "entry": c["entry"],
+                "candle_open": c["last_open"].isoformat(),
+                "message_id": resp.get("result", {}).get("message_id"),
+                "step": 1,
             }
         )
-        state["last_signal"][pair] = now.isoformat()
-        state["daily"]["count"] += 1
-        log.info("تم نشر إشارة %s %s (%.1f%%)", pair, side, rate)
+        state["last_signal"][c["pair"]] = now.isoformat()
+        daily["count"] += 1
+        daily["pairs"][c["pair"]] = daily["pairs"].get(c["pair"], 0) + 1
+        published += 1
+        log.info("تم نشر إشارة %s %s (%.1f%%)", c["pair"], c["side"], c["rate"])
 
 
 def main() -> None:
