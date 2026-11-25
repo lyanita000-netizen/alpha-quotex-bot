@@ -48,13 +48,13 @@ PAIRS_LIST = [
     ("NZD", "CHF"),
 ]
 
-SCAN_INTERVAL_SECONDS = 60         # جمع الأسعار وفحص الصفقات تلقائياً كل دقيقة
-TRADE_DURATION_MINUTES = 5         # مدة الشمعة / الصفقة (M5)
+SCAN_INTERVAL_SECONDS = 60         # فحص السوق وإرسال الصفقات كل دقيقة
+TRADE_DURATION_MINUTES = 5         # مدة الصفقة (M5)
 MAX_MARTINGALE_STEPS = 3           # أقصى عدد لمحاولات التعويض (winn1, winn2, winn3)
-SIGNAL_COOLDOWN_MINUTES = 12       # انتظار 12 دقيقة قبل تكرار صفقة نفس الزوج
-KEEP_ALIVE_INTERVAL_SECONDS = 480  # تنشيط رابط الخدمة كل 8 دقائق لتقليل الخمول
-MIN_HISTORY_POINTS = 10            # عدد نقاط السعر المطلوبة للبدء السريع
-MIN_FORECAST_PCT = 60.0            # الحد الأدنى لنسبة التوقع لقبول الصفقة
+SIGNAL_COOLDOWN_MINUTES = 3        # فاصل قصير لتدوير الأزواج بسلاسة
+KEEP_ALIVE_INTERVAL_SECONDS = 480  # تنشيط رابط الخدمة كل 8 دقائق
+MIN_HISTORY_POINTS = 10            # عدد نقاط السعر المطلوبة للبدء
+MIN_FORECAST_PCT = 60.0            # الحد الأدنى لنسبة التوقع
 
 price_history: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=120))
 last_signal_time: dict[str, datetime] = {}
@@ -157,16 +157,32 @@ def analyze_trade_signal(pair_name: str, prices: list[float]) -> dict | None:
     prev_ema21 = ind["prev_ema21"]
     curr_rsi = ind["rsi"]
 
-    bullish_cross_or_trend = (
-        (prev_ema9 <= prev_ema21 and curr_ema9 > curr_ema21 and curr_rsi >= 48.0)
-        or (curr_ema9 > curr_ema21 and curr_price >= prev_price and curr_rsi >= 50.0)
-    )
-    if bullish_cross_or_trend:
-        ema_bonus = 2.0 if curr_ema9 > curr_ema21 else 0.0
-        rsi_bonus = max(0.0, curr_rsi - 45.0) * 0.85
-        forecast = min(96.0, round(74.0 + rsi_bonus + ema_bonus, 2))
-        if forecast < MIN_FORECAST_PCT:
-            return None
+    # تحديد الاتجاه الأساسي بناءً على المتوسطات والزخم اللحظي لضمان استمرارية الإشارات
+    bullish_score = 0.0
+    bearish_score = 0.0
+
+    if curr_ema9 >= curr_ema21:
+        bullish_score += 2.0
+    else:
+        bearish_score += 2.0
+
+    if prev_ema9 <= prev_ema21 and curr_ema9 > curr_ema21:
+        bullish_score += 2.5
+    elif prev_ema9 >= prev_ema21 and curr_ema9 < curr_ema21:
+        bearish_score += 2.5
+
+    if curr_price >= prev_price:
+        bullish_score += 1.5
+    else:
+        bearish_score += 1.5
+
+    if curr_rsi >= 50.0:
+        bullish_score += min(3.0, (curr_rsi - 50.0) * 0.25)
+    else:
+        bearish_score += min(3.0, (50.0 - curr_rsi) * 0.25)
+
+    if bullish_score >= bearish_score:
+        forecast = min(95.0, max(MIN_FORECAST_PCT, round(62.0 + bullish_score * 3.2, 2)))
         return {
             "direction": "call",
             "arrow": "🔼",
@@ -174,17 +190,8 @@ def analyze_trade_signal(pair_name: str, prices: list[float]) -> dict | None:
             "forecast": forecast,
             "entry_price": curr_price,
         }
-
-    bearish_cross_or_trend = (
-        (prev_ema9 >= prev_ema21 and curr_ema9 < curr_ema21 and curr_rsi <= 52.0)
-        or (curr_ema9 < curr_ema21 and curr_price <= prev_price and curr_rsi <= 50.0)
-    )
-    if bearish_cross_or_trend:
-        ema_bonus = 2.0 if curr_ema9 < curr_ema21 else 0.0
-        rsi_bonus = max(0.0, 55.0 - curr_rsi) * 0.85
-        forecast = min(96.0, round(74.0 + rsi_bonus + ema_bonus, 2))
-        if forecast < MIN_FORECAST_PCT:
-            return None
+    else:
+        forecast = min(95.0, max(MIN_FORECAST_PCT, round(62.0 + bearish_score * 3.2, 2)))
         return {
             "direction": "put",
             "arrow": "🔽",
@@ -192,8 +199,6 @@ def analyze_trade_signal(pair_name: str, prices: list[float]) -> dict | None:
             "forecast": forecast,
             "entry_price": curr_price,
         }
-
-    return None
 
 
 async def verify_and_post_result(context: ContextTypes.DEFAULT_TYPE):
@@ -266,6 +271,13 @@ async def scan_market_job(context: ContextTypes.DEFAULT_TYPE):
     for pair_name, current_price in snapshot.items():
         price_history[pair_name].append(current_price)
 
+    ready_pairs = sum(
+        1 for pair_name, _ in PAIRS_LIST if len(price_history[pair_name]) >= MIN_HISTORY_POINTS
+    )
+    if ready_pairs == 0:
+        logger.info("جاري تجميع نقاط الأسعار الأولية (%d نقطة مطلوبة)...", MIN_HISTORY_POINTS)
+        return
+
     best_candidate: tuple[float, str, dict] | None = None
 
     for pair_name, _ in PAIRS_LIST:
@@ -285,15 +297,6 @@ async def scan_market_job(context: ContextTypes.DEFAULT_TYPE):
             best_candidate = (signal["forecast"], pair_name, signal)
 
     if best_candidate is None:
-        ready_pairs = sum(
-            1 for pair_name, _ in PAIRS_LIST if len(price_history[pair_name]) >= MIN_HISTORY_POINTS
-        )
-        logger.info(
-            "فحص السوق مكتمل: الأزواج الجاهزة=%d/%d ولم تتجاوز أي فرصة عتبة %.1f%%",
-            ready_pairs,
-            len(PAIRS_LIST),
-            MIN_FORECAST_PCT,
-        )
         return
 
     _, pair_name, signal = best_candidate
@@ -305,7 +308,7 @@ async def scan_market_job(context: ContextTypes.DEFAULT_TYPE):
         f"{signal['arrow']} {signal['direction']}\n\n"
         f"🚦 Tend: {signal['tend']}\n"
         f"📈 Forecast: {signal['forecast']:.2f}%\n"
-        f" Entry: {signal['entry_price']:.5f}\n\n"
+        f"🎯 Entry: {signal['entry_price']:.5f}\n\n"
         f"🔗 REGISTER HERE: {AFFILIATE_LINK}"
     )
 
@@ -317,7 +320,7 @@ async def scan_market_job(context: ContextTypes.DEFAULT_TYPE):
         )
         last_signal_time[pair_name] = now
         logger.info(
-            "تم نشر صفقة: %s (%s) بنسبة %.2f%%",
+            "تم نشر صفقة في القناة: %s (%s) بنسبة %.2f%%",
             pair_name,
             signal["direction"],
             signal["forecast"],
