@@ -1,15 +1,5 @@
 {
-  "pending": [
-    {
-      "pair": "USDCAD",
-      "side": "call",
-      "entry": 1.4218000173568726,
-      "candle_open": "2026-11-26T14:15:00+00:00",
-      "message_id": 125,
-      "origin_id": 125,
-      "step": 1
-    }
-  ],
+  "pending": [],
   "last_signal": {
     "GBPUSD": "2026-11-26T07:37:29.275934+00:00",
     "EURUSD": "2026-11-26T07:37:29.275934+00:00",
@@ -43,6 +33,12 @@
       "ts": "2026-11-26T07:55:24.047207+00:00",
       "pair": "EURGBP",
       "final": "draw",
+      "steps": 1
+    },
+    {
+      "ts": "2026-11-26T14:25:21.083821+00:00",
+      "pair": "USDCAD",
+      "final": "win",
       "steps": 1
     }
   ]
