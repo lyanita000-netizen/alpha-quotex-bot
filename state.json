@@ -1,40 +1,13 @@
 {
   "pending": [
     {
-      "pair": "USDCHF",
-      "side": "call",
-      "entry": 0.8332899808883667,
-      "candle_open": "2026-11-26T22:10:00+00:00",
-      "message_id": 156,
-      "origin_id": 153,
-      "step": 2
-    },
-    {
-      "pair": "AUDNZD",
-      "side": "call",
-      "entry": 1.2107900381088257,
-      "candle_open": "2026-11-26T22:10:00+00:00",
-      "message_id": 158,
-      "origin_id": 158,
-      "step": 1
-    },
-    {
       "pair": "GBPAUD",
       "side": "call",
-      "entry": 1.9735699892044067,
-      "candle_open": "2026-11-26T22:10:00+00:00",
-      "message_id": 159,
+      "entry": 1.9734200239181519,
+      "candle_open": "2026-11-26T22:15:00+00:00",
+      "message_id": 163,
       "origin_id": 159,
-      "step": 1
-    },
-    {
-      "pair": "EURCAD",
-      "side": "call",
-      "entry": 1.562000036239624,
-      "candle_open": "2026-11-26T22:10:00+00:00",
-      "message_id": 160,
-      "origin_id": 160,
-      "step": 1
+      "step": 2
     }
   ],
   "last_signal": {
@@ -171,6 +144,24 @@
     {
       "ts": "2026-11-26T22:15:20.062089+00:00",
       "pair": "AUDCAD",
+      "final": "win",
+      "steps": 1
+    },
+    {
+      "ts": "2026-11-26T22:20:24.275451+00:00",
+      "pair": "USDCHF",
+      "final": "win",
+      "steps": 2
+    },
+    {
+      "ts": "2026-11-26T22:20:24.275451+00:00",
+      "pair": "AUDNZD",
+      "final": "win",
+      "steps": 1
+    },
+    {
+      "ts": "2026-11-26T22:20:24.275451+00:00",
+      "pair": "EURCAD",
       "final": "win",
       "steps": 1
     }
