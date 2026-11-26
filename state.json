@@ -1,22 +1,5 @@
 {
-  "pending": [
-    {
-      "pair": "GBPUSD",
-      "side": "put",
-      "entry": 1.3113378286361694,
-      "candle_open": "2026-11-26T07:30:00+00:00",
-      "message_id": 115,
-      "step": 1
-    },
-    {
-      "pair": "EURUSD",
-      "side": "put",
-      "entry": 1.0978153944015503,
-      "candle_open": "2026-11-26T07:30:00+00:00",
-      "message_id": 116,
-      "step": 1
-    }
-  ],
+  "pending": [],
   "last_signal": {
     "GBPUSD": "2026-11-26T07:37:29.275934+00:00",
     "EURUSD": "2026-11-26T07:37:29.275934+00:00"
@@ -29,5 +12,18 @@
       "EURUSD": 1
     }
   },
-  "history": []
+  "history": [
+    {
+      "ts": "2026-11-26T07:45:28.030312+00:00",
+      "pair": "GBPUSD",
+      "final": "win",
+      "steps": 1
+    },
+    {
+      "ts": "2026-11-26T07:45:28.030312+00:00",
+      "pair": "EURUSD",
+      "final": "loss",
+      "steps": 1
+    }
+  ]
 }
