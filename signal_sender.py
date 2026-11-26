@@ -45,10 +45,10 @@ PAIRS = [
     for p in os.environ.get("PAIRS", DEFAULT_PAIRS).split(",")
     if p.strip()
 ]
-MIN_FORECAST = float(os.environ.get("MIN_FORECAST", "54"))          # ≈ نسبة التعادل عند عائد 85%
+MIN_FORECAST = float(os.environ.get("MIN_FORECAST", "56"))          # ≈ نسبة التعادل عند عائد 85%
 MIN_SAMPLES = int(os.environ.get("MIN_SAMPLES", "300"))             # أقل عدد صفقات تاريخية نثق به
-MAX_SIGNALS_PER_DAY = int(os.environ.get("MAX_SIGNALS_PER_DAY", "15"))
-MAX_NEW_PER_RUN = int(os.environ.get("MAX_NEW_PER_RUN", "2"))
+MAX_SIGNALS_PER_DAY = int(os.environ.get("MAX_SIGNALS_PER_DAY", "25"))
+MAX_NEW_PER_RUN = int(os.environ.get("MAX_NEW_PER_RUN", "3"))
 MAX_PER_PAIR_PER_DAY = int(os.environ.get("MAX_PER_PAIR_PER_DAY", "2"))
 MAX_STEPS = int(os.environ.get("MAX_STEPS", "2"))                   # 2 = الصفقة + تعويض واحد (1 = بلا تعويض)
 READY_BUFFER_SEC = int(os.environ.get("READY_BUFFER_SEC", "3"))        # انتظار بعد إغلاق شمعة النتيجة (الجدولة تبدأ بعد ~25 ثانية)
@@ -65,7 +65,7 @@ BB_PERIOD = 20
 #   25:75:2.5  = الأقوى (61.4%)      20:80:2.0 = إضافية (59.9%)      30:70:2.5 = أكثر إشارات (58.2%)
 RULES = [
     tuple(float(x) for x in r.split(":"))
-    for r in os.environ.get("RULES", "25:75:2.5").split(",") if r.strip()
+    for r in os.environ.get("RULES", "25:75:2.5,20:80:2.0,30:70:2.5").split(",") if r.strip()
 ]
 
 SUPERSCRIPT = {1: "¹", 2: "²", 3: "³", 4: "⁴", 5: "⁵"}
