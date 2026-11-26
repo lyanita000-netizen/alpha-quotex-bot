@@ -1,48 +1,30 @@
 {
   "pending": [
     {
-      "pair": "EURJPY",
+      "pair": "CADJPY",
       "side": "call",
-      "entry": 174.5240020751953,
-      "candle_open": "2026-11-26T22:00:00+00:00",
-      "message_id": 141,
-      "origin_id": 138,
-      "step": 2
-    },
-    {
-      "pair": "GBPJPY",
-      "side": "call",
-      "entry": 208.50799560546875,
-      "candle_open": "2026-11-26T22:00:00+00:00",
-      "message_id": 142,
-      "origin_id": 139,
-      "step": 2
-    },
-    {
-      "pair": "AUDCHF",
-      "side": "call",
-      "entry": 0.5518800020217896,
-      "candle_open": "2026-11-26T22:00:00+00:00",
-      "message_id": 144,
-      "origin_id": 144,
+      "entry": 111.66600036621094,
+      "candle_open": "2026-11-26T22:05:00+00:00",
+      "message_id": 152,
+      "origin_id": 152,
       "step": 1
     },
     {
-      "pair": "NZDJPY",
+      "pair": "USDCHF",
       "side": "call",
-      "entry": 86.79299926757812,
-      "candle_open": "2026-11-26T22:00:00+00:00",
-      "message_id": 145,
-      "origin_id": 145,
+      "entry": 0.8335400223731995,
+      "candle_open": "2026-11-26T22:05:00+00:00",
+      "message_id": 153,
+      "origin_id": 153,
       "step": 1
     },
     {
-      "pair": "GBPCHF",
+      "pair": "AUDCAD",
       "side": "call",
-      "entry": 1.0916800498962402,
-      "candle_open": "2026-11-26T22:00:00+00:00",
-      "message_id": 146,
-      "origin_id": 146,
+      "entry": 0.944130003452301,
+      "candle_open": "2026-11-26T22:05:00+00:00",
+      "message_id": 154,
+      "origin_id": 154,
       "step": 1
     }
   ],
@@ -53,17 +35,19 @@
     "USDCAD": "2026-11-26T14:20:23.961334+00:00",
     "AUDNZD": "2026-11-26T14:55:23.593801+00:00",
     "NZDJPY": "2026-11-26T22:05:26.312000+00:00",
-    "CADJPY": "2026-11-26T20:55:23.203342+00:00",
+    "CADJPY": "2026-11-26T22:10:23.392626+00:00",
     "GBPAUD": "2026-11-26T21:00:25.111405+00:00",
     "EURJPY": "2026-11-26T22:00:27.206758+00:00",
     "GBPJPY": "2026-11-26T22:00:27.206758+00:00",
     "NZDCAD": "2026-11-26T22:00:27.206758+00:00",
     "AUDCHF": "2026-11-26T22:05:26.312000+00:00",
-    "GBPCHF": "2026-11-26T22:05:26.312000+00:00"
+    "GBPCHF": "2026-11-26T22:05:26.312000+00:00",
+    "USDCHF": "2026-11-26T22:10:23.392626+00:00",
+    "AUDCAD": "2026-11-26T22:10:23.392626+00:00"
   },
   "daily": {
     "date": "2026-11-26",
-    "count": 14,
+    "count": 17,
     "pairs": {
       "GBPUSD": 1,
       "EURUSD": 1,
@@ -71,13 +55,15 @@
       "USDCAD": 1,
       "AUDNZD": 1,
       "NZDJPY": 2,
-      "CADJPY": 1,
+      "CADJPY": 2,
       "GBPAUD": 1,
       "EURJPY": 1,
       "GBPJPY": 1,
       "NZDCAD": 1,
       "AUDCHF": 1,
-      "GBPCHF": 1
+      "GBPCHF": 1,
+      "USDCHF": 1,
+      "AUDCAD": 1
     }
   },
   "history": [
@@ -132,6 +118,36 @@
     {
       "ts": "2026-11-26T22:05:26.312000+00:00",
       "pair": "NZDCAD",
+      "final": "win",
+      "steps": 1
+    },
+    {
+      "ts": "2026-11-26T22:10:23.392626+00:00",
+      "pair": "EURJPY",
+      "final": "win",
+      "steps": 2
+    },
+    {
+      "ts": "2026-11-26T22:10:23.392626+00:00",
+      "pair": "GBPJPY",
+      "final": "win",
+      "steps": 2
+    },
+    {
+      "ts": "2026-11-26T22:10:23.392626+00:00",
+      "pair": "AUDCHF",
+      "final": "win",
+      "steps": 1
+    },
+    {
+      "ts": "2026-11-26T22:10:23.392626+00:00",
+      "pair": "NZDJPY",
+      "final": "win",
+      "steps": 1
+    },
+    {
+      "ts": "2026-11-26T22:10:23.392626+00:00",
+      "pair": "GBPCHF",
       "final": "win",
       "steps": 1
     }
