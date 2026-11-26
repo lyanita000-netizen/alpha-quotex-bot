@@ -34,8 +34,11 @@ AFFILIATE_LINK = os.environ.get(
     "AFFILIATE_LINK", "https://broker-qx.pro/sign-up/?lid=2438595"
 )
 DEFAULT_PAIRS = (
-    "EURUSD,GBPUSD,AUDUSD,USDJPY,USDCAD,USDCHF,"
-    "NZDUSD,EURJPY,GBPJPY,EURGBP,AUDCAD,EURAUD"
+    "EURUSD,GBPUSD,AUDUSD,NZDUSD,USDJPY,USDCAD,USDCHF,"
+    "EURJPY,GBPJPY,AUDJPY,NZDJPY,CADJPY,CHFJPY,"
+    "EURGBP,EURAUD,EURNZD,EURCAD,EURCHF,"
+    "GBPAUD,GBPCAD,GBPCHF,GBPNZD,"
+    "AUDCAD,AUDCHF,AUDNZD,NZDCAD,CADCHF"
 )
 PAIRS = [
     p.strip().upper()
@@ -44,7 +47,7 @@ PAIRS = [
 ]
 MIN_FORECAST = float(os.environ.get("MIN_FORECAST", "54"))          # ≈ نسبة التعادل عند عائد 85%
 MIN_SAMPLES = int(os.environ.get("MIN_SAMPLES", "300"))             # أقل عدد صفقات تاريخية نثق به
-MAX_SIGNALS_PER_DAY = int(os.environ.get("MAX_SIGNALS_PER_DAY", "8"))
+MAX_SIGNALS_PER_DAY = int(os.environ.get("MAX_SIGNALS_PER_DAY", "15"))
 MAX_NEW_PER_RUN = int(os.environ.get("MAX_NEW_PER_RUN", "2"))
 MAX_PER_PAIR_PER_DAY = int(os.environ.get("MAX_PER_PAIR_PER_DAY", "2"))
 MAX_STEPS = int(os.environ.get("MAX_STEPS", "2"))                   # 2 = الصفقة + تعويض واحد (1 = بلا تعويض)
@@ -57,10 +60,13 @@ STATE_FILE = Path(os.environ.get("STATE_FILE", "state.json"))
 
 CANDLE_MIN = 5            # فريم M5، والصفقة مدتها شمعة واحدة (5 دقائق)
 RSI_PERIOD = 14
-RSI_LOW = 25
-RSI_HIGH = 75
 BB_PERIOD = 20
-BB_Z = 2.5
+# القواعد المعتمدة (نجحت في الباكتست بشروط 99%) بصيغة  RSI_منخفض:RSI_مرتفع:بولنجر ، افصل بينها بفاصلة.
+#   25:75:2.5  = الأقوى (61.4%)      20:80:2.0 = إضافية (59.9%)      30:70:2.5 = أكثر إشارات (58.2%)
+RULES = [
+    tuple(float(x) for x in r.split(":"))
+    for r in os.environ.get("RULES", "25:75:2.5").split(",") if r.strip()
+]
 
 SUPERSCRIPT = {1: "¹", 2: "²", 3: "³", 4: "⁴", 5: "⁵"}
 
@@ -84,22 +90,23 @@ def bb_z(close: pd.Series, period: int = BB_PERIOD) -> pd.Series:
     return (close - m) / sd.where(sd != 0)
 
 
-def signal_series(close: pd.Series) -> pd.Series:
+def signal_series(close: pd.Series, rule=None) -> pd.Series:
     """+1 = call ، -1 = put ، 0 = لا إشارة (لكل شمعة)."""
+    low, high, zmax = rule or RULES[0]
     r = rsi(close)
     z = bb_z(close)
-    call = (r < RSI_LOW) & (z < -BB_Z)
-    put = (r > RSI_HIGH) & (z > BB_Z)
+    call = (r < low) & (z < -zmax)
+    put = (r > high) & (z > zmax)
     return call.astype(int) - put.astype(int)
 
 
-def pooled_backtest(closes: dict) -> dict:
+def pooled_backtest(closes: dict, rule=None) -> dict:
     """نسبة نجاح الإشارة تاريخياً مجمّعة على كل الأزواج، لكل اتجاه.
     الدخول عند إغلاق شمعة الإشارة والخروج عند إغلاق الشمعة التالية، دون التعادل."""
     wins = {1: 0, -1: 0}
     total = {1: 0, -1: 0}
     for close in closes.values():
-        side = signal_series(close)
+        side = signal_series(close, rule)
         diff = close.shift(-1) - close
         step = close.index.to_series().shift(-1) - close.index.to_series()
         valid = (side != 0) & (step == pd.Timedelta(minutes=CANDLE_MIN)) & diff.notna() & (diff != 0)
@@ -138,6 +145,29 @@ def fetch_candles(pair: str):
         df.index.tz_localize("UTC") if df.index.tz is None else df.index.tz_convert("UTC")
     )
     return df
+
+
+def fetch_all(pairs) -> dict:
+    """يجلب كل الأزواج بطلب واحد (أسرع بكثير من 27 طلباً منفصلاً)."""
+    import yfinance as yf
+
+    raw = yf.download(
+        [f"{p}=X" for p in pairs], period="58d", interval="5m",
+        progress=False, auto_adjust=False, group_by="ticker", threads=True,
+    )
+    out = {}
+    if raw is None or raw.empty:
+        return out
+    for p in pairs:
+        try:
+            df = raw[f"{p}=X"][["Close"]].dropna()
+        except Exception:
+            continue
+        if df.empty:
+            continue
+        df.index = df.index.tz_localize("UTC") if df.index.tz is None else df.index.tz_convert("UTC")
+        out[p] = df
+    return out
 
 
 def closed_only(df: pd.DataFrame, now: datetime) -> pd.DataFrame:
@@ -305,9 +335,13 @@ def publish_signals(state: dict, now: datetime, get_df) -> None:
     if not closes:
         return
 
-    stats = pooled_backtest(closes)
-    log.info("النسبة التاريخية المجمّعة: call %.1f%% (%d) | put %.1f%% (%d)",
-             stats["call"][0], stats["call"][1], stats["put"][0], stats["put"][1])
+    stats = {}
+    for rule in RULES:
+        stats[rule] = pooled_backtest(closes, rule)
+        log.info("القاعدة %s | النسبة التاريخية المجمّعة: call %.1f%% (%d) | put %.1f%% (%d)",
+                 ":".join(f"{x:g}" for x in rule),
+                 stats[rule]["call"][0], stats[rule]["call"][1],
+                 stats[rule]["put"][0], stats[rule]["put"][1])
 
     busy = {s["pair"] for s in state["pending"]}
     pairs = list(closes)
@@ -331,18 +365,23 @@ def publish_signals(state: dict, now: datetime, get_df) -> None:
         if last_sig and now - datetime.fromisoformat(last_sig) < timedelta(minutes=COOLDOWN_MIN):
             continue
 
-        s = int(signal_series(close).iloc[-1])
-        if s == 0:
+        best = None
+        for rule in RULES:
+            s_ = int(signal_series(close, rule).iloc[-1])
+            if s_ == 0:
+                continue
+            side = "call" if s_ == 1 else "put"
+            rate, samples = stats[rule][side]
+            if samples < MIN_SAMPLES or rate <= MIN_FORECAST:
+                log.info("%s: إشارة %s مرفوضة (نسبة تاريخية %.1f%% من %d صفقة)", pair, side, rate, samples)
+                continue
+            if best is None or rate > best[1]:
+                best = (side, rate, samples)
+        if best is None:
             log.info("%s: RSI=%.1f z=%.2f (لا توجد إشارة الآن)",
                      pair, rsi(close).iloc[-1], bb_z(close).iloc[-1])
             continue
-        side = "call" if s == 1 else "put"
-
-        rate, samples = stats[side]
-        if samples < MIN_SAMPLES or rate <= MIN_FORECAST:
-            log.info("%s: إشارة %s مرفوضة (نسبة تاريخية %.1f%% من %d صفقة)",
-                     pair, side, rate, samples)
-            continue
+        side, rate, samples = best
 
         candidates.append(
             {
@@ -449,8 +488,17 @@ def main() -> None:
     state.setdefault("history", [])
     cache: dict = {}
 
+    bulk = {"loaded": False}
+
     def get_df(pair: str):
-        if pair not in cache:
+        if not bulk["loaded"]:
+            bulk["loaded"] = True
+            try:
+                for p, df in fetch_all(PAIRS).items():
+                    cache[p] = closed_only(df, now)
+            except Exception as exc:
+                log.error("فشل الجلب المجمّع: %s", exc)
+        if cache.get(pair) is None:
             try:
                 raw = fetch_candles(pair)
             except Exception as exc:
