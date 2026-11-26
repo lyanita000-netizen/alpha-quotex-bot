@@ -1,15 +1,5 @@
 {
-  "pending": [
-    {
-      "pair": "NZDJPY",
-      "side": "call",
-      "entry": 87.12200164794922,
-      "candle_open": "2026-11-26T15:15:00+00:00",
-      "message_id": 129,
-      "origin_id": 129,
-      "step": 1
-    }
-  ],
+  "pending": [],
   "last_signal": {
     "GBPUSD": "2026-11-26T07:37:29.275934+00:00",
     "EURUSD": "2026-11-26T07:37:29.275934+00:00",
@@ -58,6 +48,12 @@
     {
       "ts": "2026-11-26T15:00:27.712509+00:00",
       "pair": "AUDNZD",
+      "final": "win",
+      "steps": 1
+    },
+    {
+      "ts": "2026-11-26T15:25:22.477419+00:00",
+      "pair": "NZDJPY",
       "final": "win",
       "steps": 1
     }
