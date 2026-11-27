@@ -3,20 +3,20 @@
     {
       "pair": "EURAUD",
       "side": "call",
-      "entry": 1.6433700323104858,
-      "candle_open": "2026-11-27T08:10:00+00:00",
-      "message_id": 179,
+      "entry": 1.6430100202560425,
+      "candle_open": "2026-11-27T08:15:00+00:00",
+      "message_id": 181,
       "origin_id": 179,
-      "step": 1
+      "step": 2
     },
     {
       "pair": "EURGBP",
       "side": "call",
-      "entry": 0.835640013217926,
-      "candle_open": "2026-11-27T08:10:00+00:00",
-      "message_id": 180,
+      "entry": 0.8355500102043152,
+      "candle_open": "2026-11-27T08:15:00+00:00",
+      "message_id": 182,
       "origin_id": 180,
-      "step": 1
+      "step": 2
     }
   ],
   "last_signal": {
