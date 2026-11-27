@@ -1,15 +1,5 @@
 {
-  "pending": [
-    {
-      "pair": "EURCHF",
-      "side": "call",
-      "entry": 0.91389000415802,
-      "candle_open": "2026-11-27T21:35:00+00:00",
-      "message_id": 242,
-      "origin_id": 241,
-      "step": 2
-    }
-  ],
+  "pending": [],
   "last_signal": {
     "GBPUSD": "2026-11-27T13:20:21.436937+00:00",
     "EURUSD": "2026-11-27T13:20:21.436937+00:00",
@@ -341,6 +331,12 @@
       "pair": "EURCAD",
       "final": "win",
       "steps": 1
+    },
+    {
+      "ts": "2026-11-27T21:45:23.518064+00:00",
+      "pair": "EURCHF",
+      "final": "win",
+      "steps": 2
     }
   ],
   "last_summary": "2026-11-27T21:00:31.409293+00:00"
