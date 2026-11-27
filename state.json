@@ -3,11 +3,11 @@
     {
       "pair": "EURCHF",
       "side": "call",
-      "entry": 0.9139699935913086,
-      "candle_open": "2026-11-27T21:30:00+00:00",
-      "message_id": 241,
+      "entry": 0.91389000415802,
+      "candle_open": "2026-11-27T21:35:00+00:00",
+      "message_id": 242,
       "origin_id": 241,
-      "step": 1
+      "step": 2
     }
   ],
   "last_signal": {
