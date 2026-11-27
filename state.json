@@ -3,20 +3,20 @@
     {
       "pair": "NZDCAD",
       "side": "call",
-      "entry": 0.7789700031280518,
-      "candle_open": "2026-11-27T15:00:00+00:00",
-      "message_id": 230,
+      "entry": 0.7789000272750854,
+      "candle_open": "2026-11-27T15:05:00+00:00",
+      "message_id": 232,
       "origin_id": 230,
-      "step": 1
+      "step": 2
     },
     {
       "pair": "NZDJPY",
       "side": "call",
-      "entry": 87.19000244140625,
-      "candle_open": "2026-11-27T15:00:00+00:00",
-      "message_id": 231,
+      "entry": 87.18199920654297,
+      "candle_open": "2026-11-27T15:05:00+00:00",
+      "message_id": 233,
       "origin_id": 231,
-      "step": 1
+      "step": 2
     }
   ],
   "last_signal": {
