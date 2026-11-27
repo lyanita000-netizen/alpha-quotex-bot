@@ -1,31 +1,13 @@
 {
   "pending": [
     {
-      "pair": "AUDNZD",
-      "side": "call",
-      "entry": 1.2144299745559692,
-      "candle_open": "2026-11-27T14:35:00+00:00",
-      "message_id": 223,
-      "origin_id": 222,
-      "step": 2
-    },
-    {
-      "pair": "AUDCHF",
-      "side": "call",
-      "entry": 0.5551300048828125,
-      "candle_open": "2026-11-27T14:35:00+00:00",
-      "message_id": 224,
-      "origin_id": 224,
-      "step": 1
-    },
-    {
       "pair": "AUDCAD",
       "side": "call",
-      "entry": 0.9473199844360352,
-      "candle_open": "2026-11-27T14:35:00+00:00",
-      "message_id": 225,
+      "entry": 0.9472799897193909,
+      "candle_open": "2026-11-27T14:40:00+00:00",
+      "message_id": 228,
       "origin_id": 225,
-      "step": 1
+      "step": 2
     }
   ],
   "last_signal": {
@@ -314,6 +296,18 @@
       "pair": "AUDJPY",
       "final": "win",
       "steps": 2
+    },
+    {
+      "ts": "2026-11-27T14:45:25.044048+00:00",
+      "pair": "AUDNZD",
+      "final": "win",
+      "steps": 2
+    },
+    {
+      "ts": "2026-11-27T14:45:25.044048+00:00",
+      "pair": "AUDCHF",
+      "final": "win",
+      "steps": 1
     }
   ],
   "last_summary": "2026-11-26T21:00:25.111405+00:00"
