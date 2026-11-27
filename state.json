@@ -23,30 +23,9 @@
     "EURAUD": "2026-11-27T01:15:19.386908+00:00"
   },
   "daily": {
-    "date": "2026-11-26",
-    "count": 25,
-    "pairs": {
-      "GBPUSD": 1,
-      "EURUSD": 1,
-      "EURGBP": 1,
-      "USDCAD": 2,
-      "AUDNZD": 2,
-      "NZDJPY": 2,
-      "CADJPY": 2,
-      "GBPAUD": 2,
-      "EURJPY": 1,
-      "GBPJPY": 1,
-      "NZDCAD": 1,
-      "AUDCHF": 1,
-      "GBPCHF": 1,
-      "USDCHF": 1,
-      "AUDCAD": 1,
-      "EURCAD": 1,
-      "NZDUSD": 1,
-      "EURNZD": 1,
-      "GBPNZD": 1,
-      "EURAUD": 1
-    }
+    "date": "2026-11-27",
+    "count": 0,
+    "pairs": {}
   },
   "history": [
     {
