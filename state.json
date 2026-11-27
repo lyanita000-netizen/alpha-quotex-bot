@@ -1,24 +1,5 @@
 {
-  "pending": [
-    {
-      "pair": "EURNZD",
-      "side": "call",
-      "entry": 1.999269962310791,
-      "candle_open": "2026-11-27T01:15:00+00:00",
-      "message_id": 171,
-      "origin_id": 168,
-      "step": 2
-    },
-    {
-      "pair": "GBPNZD",
-      "side": "call",
-      "entry": 2.3892099857330322,
-      "candle_open": "2026-11-27T01:15:00+00:00",
-      "message_id": 172,
-      "origin_id": 169,
-      "step": 2
-    }
-  ],
+  "pending": [],
   "last_signal": {
     "GBPUSD": "2026-11-26T07:37:29.275934+00:00",
     "EURUSD": "2026-11-26T07:37:29.275934+00:00",
@@ -199,6 +180,18 @@
       "pair": "EURAUD",
       "final": "win",
       "steps": 1
+    },
+    {
+      "ts": "2026-11-27T01:25:29.439500+00:00",
+      "pair": "EURNZD",
+      "final": "win",
+      "steps": 2
+    },
+    {
+      "ts": "2026-11-27T01:25:29.439500+00:00",
+      "pair": "GBPNZD",
+      "final": "win",
+      "steps": 2
     }
   ],
   "last_summary": "2026-11-26T21:00:25.111405+00:00"
