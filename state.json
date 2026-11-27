@@ -1,15 +1,5 @@
 {
-  "pending": [
-    {
-      "pair": "GBPNZD",
-      "side": "call",
-      "entry": 2.3941400051116943,
-      "candle_open": "2026-11-27T21:45:00+00:00",
-      "message_id": 244,
-      "origin_id": 244,
-      "step": 1
-    }
-  ],
+  "pending": [],
   "last_signal": {
     "GBPUSD": "2026-11-27T13:20:21.436937+00:00",
     "EURUSD": "2026-11-27T13:20:21.436937+00:00",
@@ -348,6 +338,12 @@
       "pair": "EURCHF",
       "final": "win",
       "steps": 2
+    },
+    {
+      "ts": "2026-11-27T21:55:19.963231+00:00",
+      "pair": "GBPNZD",
+      "final": "win",
+      "steps": 1
     }
   ],
   "last_summary": "2026-11-27T21:00:31.409293+00:00"
