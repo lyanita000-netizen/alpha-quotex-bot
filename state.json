@@ -1,40 +1,31 @@
 {
   "pending": [
     {
-      "pair": "AUDCHF",
-      "side": "call",
-      "entry": 0.5564900040626526,
-      "candle_open": "2026-11-27T11:45:00+00:00",
-      "message_id": 186,
-      "origin_id": 185,
-      "step": 2
-    },
-    {
       "pair": "AUDJPY",
       "side": "call",
-      "entry": 106.27799987792969,
-      "candle_open": "2026-11-27T11:45:00+00:00",
-      "message_id": 187,
+      "entry": 106.26899719238281,
+      "candle_open": "2026-11-27T11:50:00+00:00",
+      "message_id": 191,
       "origin_id": 187,
-      "step": 1
+      "step": 2
     },
     {
       "pair": "GBPCHF",
       "side": "call",
-      "entry": 1.095479965209961,
-      "candle_open": "2026-11-27T11:45:00+00:00",
-      "message_id": 188,
+      "entry": 1.0951600074768066,
+      "candle_open": "2026-11-27T11:50:00+00:00",
+      "message_id": 192,
       "origin_id": 188,
-      "step": 1
+      "step": 2
     },
     {
       "pair": "CADCHF",
       "side": "call",
-      "entry": 0.5859100222587585,
-      "candle_open": "2026-11-27T11:45:00+00:00",
-      "message_id": 189,
+      "entry": 0.5858700275421143,
+      "candle_open": "2026-11-27T11:50:00+00:00",
+      "message_id": 193,
       "origin_id": 189,
-      "step": 1
+      "step": 2
     }
   ],
   "last_signal": {
@@ -233,6 +224,12 @@
     {
       "ts": "2026-11-27T08:25:21.844522+00:00",
       "pair": "EURGBP",
+      "final": "loss",
+      "steps": 2
+    },
+    {
+      "ts": "2026-11-27T11:55:21.964086+00:00",
+      "pair": "AUDCHF",
       "final": "loss",
       "steps": 2
     }
