@@ -1,15 +1,5 @@
 {
-  "pending": [
-    {
-      "pair": "NZDUSD",
-      "side": "call",
-      "entry": 0.5466572046279907,
-      "candle_open": "2026-11-27T00:05:00+00:00",
-      "message_id": 166,
-      "origin_id": 166,
-      "step": 1
-    }
-  ],
+  "pending": [],
   "last_signal": {
     "GBPUSD": "2026-11-26T07:37:29.275934+00:00",
     "EURUSD": "2026-11-26T07:37:29.275934+00:00",
@@ -172,6 +162,12 @@
       "pair": "GBPAUD",
       "final": "win",
       "steps": 2
+    },
+    {
+      "ts": "2026-11-27T00:15:20.746157+00:00",
+      "pair": "NZDUSD",
+      "final": "win",
+      "steps": 1
     }
   ],
   "last_summary": "2026-11-26T21:00:25.111405+00:00"
