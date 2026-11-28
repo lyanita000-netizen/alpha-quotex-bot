@@ -7,7 +7,6 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-import pandas as pd
 import requests
 
 BOT_TOKEN = os.environ.get(
@@ -28,8 +27,8 @@ TIMEFRAME = "1 Minute"
 CANDLE_SEC = 60
 MAX_MTG = 2
 MAX_SIGNALS_PER_DAY = int(os.environ.get("MAX_SIGNALS_PER_DAY", "200"))
-MAX_NEW_PER_RUN = int(os.environ.get("MAX_NEW_PER_RUN", "2"))
-COOLDOWN_MIN = int(os.environ.get("COOLDOWN_MIN", "5"))
+MAX_NEW_PER_RUN = int(os.environ.get("MAX_NEW_PER_RUN", "1"))
+COOLDOWN_MIN = int(os.environ.get("COOLDOWN_MIN", "2"))
 
 PAIRS = [
     ("EUR", "USD", "EURUSD"),
@@ -108,46 +107,91 @@ def send_telegram(text: str, reply_to: int | None = None, reply_markup: dict | N
         if r.status_code == 200 and data.get("ok"):
             return data.get("result", {}).get("message_id")
         log.warning("رد تيليغرام غير ناجح (%s): %s", r.status_code, data)
+
+        if reply_to is not None:
+            fallback = {
+                "chat_id": chat_id,
+                "text": text,
+                "disable_web_page_preview": True,
+            }
+            if reply_markup is not None:
+                fallback["reply_markup"] = reply_markup
+            r2 = requests.post(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                json=fallback,
+                timeout=15,
+            )
+            data2 = r2.json()
+            if r2.status_code == 200 and data2.get("ok"):
+                return data2.get("result", {}).get("message_id")
     except Exception as e:
         log.error("خطأ إرسال تيليغرام: %s", e)
     return None
 
 
-def check_pending(state: dict, now_utc: datetime) -> None:
-    now_ts = now_utc.timestamp()
-    kept = []
+def evaluate_single_trade_now(trade: dict) -> str:
+    """ينفذ دورة المتابعة الفورية للصفقة (الأساسية + حتى MAX_MTG) ويرسل النتيجة فور انتهاء كل 60 ثانية."""
+    msg_id = int(trade["message_id"])
+    base = trade["base"]
+    quote = trade["quote"]
+    side = trade["side"]
+    entry = float(trade["entry"])
 
-    for trade in state.get("pending_trades", []):
-        if now_ts < float(trade.get("check_at", 0)):
-            kept.append(trade)
-            continue
+    for step in range(1, MAX_MTG + 2):
+        stage_label = "الأساسية" if step == 1 else f"MTG {step - 1}"
+        log.info("بانتظار %s ثانية لحساب نتيجة %s (%s)...", CANDLE_SEC, trade["pair"], stage_label)
+        time.sleep(CANDLE_SEC)
 
-        msg_id = trade["message_id"]
-        step = int(trade.get("step", 1))
-        side = trade["side"]
-        entry = float(trade["entry"])
-        rate_now = fetch_rate(trade["base"], trade["quote"])
+        rate_now = fetch_rate(base, quote)
         exit_price = rate_now if rate_now is not None else entry
 
         won = (exit_price > entry) if side == "call" else (exit_price < entry)
         if won:
             label = "WIN ✅" if step == 1 else f"WIN ✅ MTG {step - 1}"
             send_telegram(label, reply_to=msg_id)
-            log.info("تم إرسال النتيجة %s للرسالة %s", label, msg_id)
+            log.info("أُرسلت النتيجة فوراً: %s (msg_id=%s)", label, msg_id)
+            return label
+
+        if step <= MAX_MTG:
+            log.info("لم تتحقق في %s، الانتقال إلى MTG %s...", stage_label, step)
+            entry = exit_price
+            continue
+
+        send_telegram("Loss 💔", reply_to=msg_id)
+        log.info("أُرسلت النتيجة فوراً: Loss 💔 (msg_id=%s)", msg_id)
+        return "Loss 💔"
+
+    return "Loss 💔"
+
+
+def flush_old_pending(state: dict, now_utc: datetime) -> None:
+    """يفحص الصفقات المعلّقة السابقة إن كان وقتها قد حان، ويبقي فقط ما لم يحن وقته بعد."""
+    now_ts = now_utc.timestamp()
+    kept = []
+    for trade in state.get("pending_trades", []):
+        if now_ts < float(trade.get("check_at", 0)):
+            kept.append(trade)
+            continue
+        msg_id = int(trade["message_id"])
+        step = int(trade.get("step", 1))
+        entry = float(trade["entry"])
+        rate_now = fetch_rate(trade["base"], trade["quote"])
+        exit_price = rate_now if rate_now is not None else entry
+        won = (exit_price > entry) if trade["side"] == "call" else (exit_price < entry)
+        if won:
+            label = "WIN ✅" if step == 1 else f"WIN ✅ MTG {step - 1}"
+            send_telegram(label, reply_to=msg_id)
         elif step <= MAX_MTG:
             trade["step"] = step + 1
             trade["entry"] = exit_price
             trade["check_at"] = now_ts + CANDLE_SEC
             kept.append(trade)
-            log.info("الانتقال إلى MTG %s للرسالة %s", step, msg_id)
         else:
             send_telegram("Loss 💔", reply_to=msg_id)
-            log.info("تم إرسال النتيجة Loss 💔 للرسالة %s", msg_id)
-
     state["pending_trades"] = kept
 
 
-def publish_signals(state: dict, now_utc: datetime) -> None:
+def publish_and_track_signals(state: dict, now_utc: datetime) -> None:
     local_now = now_utc + timedelta(hours=TZ_OFFSET)
     today_str = local_now.strftime("%Y-%m-%d")
     if state["daily"].get("date") != today_str:
@@ -209,19 +253,23 @@ def publish_signals(state: dict, now_utc: datetime) -> None:
 
         msg_id = send_telegram(msg_text, reply_markup=markup)
         if msg_id is not None:
-            state["pending_trades"].append({
+            state["last_signal"][symbol] = now_utc.isoformat()
+            state["daily"]["count"] += 1
+            published += 1
+            save_state(state)
+            log.info("نُشرت إشارة %s/%s (%s) | msg_id=%s", base, quote, side.upper(), msg_id)
+
+            trade_obj = {
                 "message_id": msg_id,
+                "pair": f"{base}/{quote}",
                 "base": base,
                 "quote": quote,
                 "side": side,
                 "entry": price,
                 "step": 1,
-                "check_at": now_utc.timestamp() + CANDLE_SEC,
-            })
-            state["last_signal"][symbol] = now_utc.isoformat()
-            state["daily"]["count"] += 1
-            published += 1
-            log.info("نُشرت إشارة %s/%s (%s) | msg_id=%s", base, quote, side.upper(), msg_id)
+                "check_at": time.time() + CANDLE_SEC,
+            }
+            evaluate_single_trade_now(trade_obj)
 
 
 def main() -> None:
@@ -231,8 +279,8 @@ def main() -> None:
 
     now_utc = datetime.now(timezone.utc)
     state = load_state()
-    check_pending(state, now_utc)
-    publish_signals(state, now_utc)
+    flush_old_pending(state, now_utc)
+    publish_and_track_signals(state, now_utc)
     save_state(state)
     log.info("إشارات اليوم: %s / %s", state["daily"]["count"], MAX_SIGNALS_PER_DAY)
 
