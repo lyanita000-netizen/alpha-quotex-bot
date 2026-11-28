@@ -1,7 +1,7 @@
 {
   "pending": [],
   "last_signal": {
-    "GBPUSD": "2026-11-28T17:02:05.617252+00:00",
+    "GBPUSD": "2026-11-28T17:10:19.481277+00:00",
     "EURUSD": "2026-11-28T16:50:29.622229+00:00",
     "EURGBP": "2026-11-27T22:00:28.487631+00:00",
     "USDCAD": "2026-11-27T02:05:17.448941+00:00",
@@ -29,7 +29,7 @@
   },
   "daily": {
     "date": "2026-11-28",
-    "count": 6,
+    "count": 7,
     "pairs": {}
   },
   "history": [
@@ -335,24 +335,5 @@
     }
   ],
   "last_summary": "2026-11-27T21:00:31.409293+00:00",
-  "pending_trades": [
-    {
-      "message_id": 250,
-      "base": "EUR",
-      "quote": "USD",
-      "side": "call",
-      "entry": 1.0957,
-      "step": 3,
-      "check_at": 1795885385.617252
-    },
-    {
-      "message_id": 251,
-      "base": "EUR",
-      "quote": "JPY",
-      "side": "call",
-      "entry": 174.81,
-      "step": 3,
-      "check_at": 1795885385.617252
-    }
-  ]
+  "pending_trades": []
 }
