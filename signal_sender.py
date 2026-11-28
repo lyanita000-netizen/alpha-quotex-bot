@@ -1,518 +1,240 @@
-"""
-بوت إشارات تلقائي لقناة تيليجرام (يعمل كل 5 دقائق عبر GitHub Actions).
-
-الاستراتيجية (اجتازت الاختبار التاريخي backtest.py):
-    RSI(14) أقل من 25 + السعر تحت نطاق بولنجر بـ 2.5 انحراف  → call
-    RSI(14) أعلى من 75 + السعر فوق نطاق بولنجر بـ 2.5 انحراف → put
-
-النسبة المعروضة (Forecast) ليست رقماً مخترعاً: هي نسبة نجاح نفس الإشارة تاريخياً
-مجمّعة على كل الأزواج (آخر ~58 يوماً)، وتُنشر الإشارة فقط إذا كانت النسبة أعلى من
-نسبة التعادل (MIN_FORECAST).
-
-كل تشغيل:
-  1) يفحص الصفقات المعلّقة وينشر النتيجة (WIN ✅ / Loss 💔 / Draw ➖) كرد على الإشارة،
-     وإن كان MAX_STEPS أكبر من 1 ينشر إشارة تعويض بعد الخسارة (الخسارة لا تُخفى).
-  2) يختار أقوى الإشارات ويوزعها على عملات مختلفة.
-
-كل الإعدادات تأتي من متغيرات البيئة (Secrets) وليس من الكود.
-"""
 import json
 import logging
 import os
 import random
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
 import requests
 
-# ================= الإعدادات =================
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-CHANNEL_ID = os.environ.get("CHANNEL_ID", "")
+BOT_TOKEN = os.environ.get(
+    "BOT_TOKEN", "9132434770:AAHdGs9WY6rCRrztgAJyeA6ZKRiVY2ZImJE"
+).strip()
+CHANNEL_ID = os.environ.get("CHANNEL_ID", "-1003938306672").strip()
 AFFILIATE_LINK = os.environ.get(
     "AFFILIATE_LINK", "https://broker-qx.pro/sign-up/?lid=2438595"
-)
-DEFAULT_PAIRS = (
-    "EURUSD,GBPUSD,AUDUSD,NZDUSD,USDJPY,USDCAD,USDCHF,"
-    "EURJPY,GBPJPY,AUDJPY,NZDJPY,CADJPY,CHFJPY,"
-    "EURGBP,EURAUD,EURNZD,EURCAD,EURCHF,"
-    "GBPAUD,GBPCAD,GBPCHF,GBPNZD,"
-    "AUDCAD,AUDCHF,AUDNZD,NZDCAD,CADCHF"
-)
-PAIRS = [
-    p.strip().upper()
-    for p in os.environ.get("PAIRS", DEFAULT_PAIRS).split(",")
-    if p.strip()
-]
-MIN_FORECAST = float(os.environ.get("MIN_FORECAST", "56"))          # ≈ نسبة التعادل عند عائد 85%
-MIN_SAMPLES = int(os.environ.get("MIN_SAMPLES", "300"))             # أقل عدد صفقات تاريخية نثق به
-MAX_SIGNALS_PER_DAY = int(os.environ.get("MAX_SIGNALS_PER_DAY", "25"))
-MAX_NEW_PER_RUN = int(os.environ.get("MAX_NEW_PER_RUN", "3"))
-MAX_PER_PAIR_PER_DAY = int(os.environ.get("MAX_PER_PAIR_PER_DAY", "2"))
-MAX_STEPS = int(os.environ.get("MAX_STEPS", "2"))                   # 2 = الصفقة + تعويض واحد (1 = بلا تعويض)
-READY_BUFFER_SEC = int(os.environ.get("READY_BUFFER_SEC", "3"))        # انتظار بعد إغلاق شمعة النتيجة (الجدولة تبدأ بعد ~25 ثانية)
-SUMMARY_HOUR_UTC = int(os.environ.get("SUMMARY_HOUR_UTC", "21"))    # 21:00 UTC = 22:00 الجزائر
-COOLDOWN_MIN = int(os.environ.get("COOLDOWN_MIN", "30"))
-MAX_DELAY_MIN = int(os.environ.get("MAX_DELAY_MIN", "3"))
-TZ_OFFSET = int(os.environ.get("TZ_OFFSET", "-7"))                  # توقيت منصة Quotex (UTC-7)
+).strip()
+BONUS_TEXT = os.environ.get(
+    "BONUS_TEXT", "50% Deposit Bonus"
+).strip()
+TZ_LABEL = os.environ.get("TZ_LABEL", "UTC-03").strip()
+TZ_OFFSET = int(os.environ.get("TZ_OFFSET", "-3"))
 STATE_FILE = Path(os.environ.get("STATE_FILE", "state.json"))
 
-CANDLE_MIN = 5            # فريم M5، والصفقة مدتها شمعة واحدة (5 دقائق)
-RSI_PERIOD = 14
-BB_PERIOD = 20
-# القواعد المعتمدة (نجحت في الباكتست بشروط 99%) بصيغة  RSI_منخفض:RSI_مرتفع:بولنجر ، افصل بينها بفاصلة.
-#   25:75:2.5  = الأقوى (61.4%)      20:80:2.0 = إضافية (59.9%)      30:70:2.5 = أكثر إشارات (58.2%)
-RULES = [
-    tuple(float(x) for x in r.split(":"))
-    for r in os.environ.get("RULES", "25:75:2.5,20:80:2.0,30:70:2.5").split(",") if r.strip()
+TIMEFRAME = "1 Minute"
+CANDLE_SEC = 60
+MAX_MTG = 2
+MAX_SIGNALS_PER_DAY = int(os.environ.get("MAX_SIGNALS_PER_DAY", "200"))
+MAX_NEW_PER_RUN = int(os.environ.get("MAX_NEW_PER_RUN", "2"))
+COOLDOWN_MIN = int(os.environ.get("COOLDOWN_MIN", "5"))
+
+PAIRS = [
+    ("EUR", "USD", "EURUSD"),
+    ("GBP", "USD", "GBPUSD"),
+    ("USD", "JPY", "USDJPY"),
+    ("AUD", "USD", "AUDUSD"),
+    ("EUR", "JPY", "EURJPY"),
 ]
 
-SUPERSCRIPT = {1: "¹", 2: "²", 3: "³", 4: "⁴", 5: "⁵"}
+STRATEGIES = [
+    "Fast Stochastic Exit + RSI2 Pullback",
+    "SMA20 Pullback + Stoch RSI Cross",
+    "EMA / RSI + MACD Signal Cross",
+    "SMA 3/5 Cross + Directional Range Takeover",
+]
 
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
-log = logging.getLogger("signals")
+log = logging.getLogger("channel_style_bot")
 
 
-# ================= التحليل =================
-def rsi(close: pd.Series, period: int = RSI_PERIOD) -> pd.Series:
-    delta = close.diff()
-    gain = delta.clip(lower=0).ewm(alpha=1 / period, adjust=False).mean()
-    loss = (-delta.clip(upper=0)).ewm(alpha=1 / period, adjust=False).mean()
-    rs = gain / loss.where(loss != 0)
-    out = 100 - 100 / (1 + rs)
-    return out.where(~((loss == 0) & (gain > 0)), 100.0)   # لا خسائر إطلاقاً → RSI = 100
-
-
-def bb_z(close: pd.Series, period: int = BB_PERIOD) -> pd.Series:
-    m = close.rolling(period).mean()
-    sd = close.rolling(period).std()
-    return (close - m) / sd.where(sd != 0)
-
-
-def signal_series(close: pd.Series, rule=None) -> pd.Series:
-    """+1 = call ، -1 = put ، 0 = لا إشارة (لكل شمعة)."""
-    low, high, zmax = rule or RULES[0]
-    r = rsi(close)
-    z = bb_z(close)
-    call = (r < low) & (z < -zmax)
-    put = (r > high) & (z > zmax)
-    return call.astype(int) - put.astype(int)
-
-
-def pooled_backtest(closes: dict, rule=None) -> dict:
-    """نسبة نجاح الإشارة تاريخياً مجمّعة على كل الأزواج، لكل اتجاه.
-    الدخول عند إغلاق شمعة الإشارة والخروج عند إغلاق الشمعة التالية، دون التعادل."""
-    wins = {1: 0, -1: 0}
-    total = {1: 0, -1: 0}
-    for close in closes.values():
-        side = signal_series(close, rule)
-        diff = close.shift(-1) - close
-        step = close.index.to_series().shift(-1) - close.index.to_series()
-        valid = (side != 0) & (step == pd.Timedelta(minutes=CANDLE_MIN)) & diff.notna() & (diff != 0)
-        won = (diff * side) > 0
-        for s in (1, -1):
-            m = valid & (side == s)
-            total[s] += int(m.sum())
-            wins[s] += int((won & m).sum())
-    return {
-        ("call" if s == 1 else "put"): ((wins[s] / total[s] * 100) if total[s] else 0.0, total[s])
-        for s in (1, -1)
-    }
-
-
-def decide_result(side: str, entry: float, exit_price: float) -> str:
-    if exit_price == entry:
-        return "draw"
-    won = exit_price > entry if side == "call" else exit_price < entry
-    return "win" if won else "loss"
-
-
-# ================= البيانات =================
-def fetch_candles(pair: str):
-    """شموع M5 الحقيقية، بتوقيت UTC (الفهرس = وقت فتح الشمعة)."""
-    import yfinance as yf
-
-    df = yf.download(
-        f"{pair}=X", period="58d", interval="5m", progress=False, auto_adjust=False
-    )
-    if df is None or df.empty:
-        return None
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-    df = df[["Close"]].dropna()
-    df.index = (
-        df.index.tz_localize("UTC") if df.index.tz is None else df.index.tz_convert("UTC")
-    )
-    return df
-
-
-def fetch_all(pairs) -> dict:
-    """يجلب كل الأزواج بطلب واحد (أسرع بكثير من 27 طلباً منفصلاً)."""
-    import yfinance as yf
-
-    raw = yf.download(
-        [f"{p}=X" for p in pairs], period="58d", interval="5m",
-        progress=False, auto_adjust=False, group_by="ticker", threads=True,
-    )
-    out = {}
-    if raw is None or raw.empty:
-        return out
-    for p in pairs:
-        try:
-            df = raw[f"{p}=X"][["Close"]].dropna()
-        except Exception:
-            continue
-        if df.empty:
-            continue
-        df.index = df.index.tz_localize("UTC") if df.index.tz is None else df.index.tz_convert("UTC")
-        out[p] = df
-    return out
-
-
-def closed_only(df: pd.DataFrame, now: datetime) -> pd.DataFrame:
-    return df[df.index + timedelta(minutes=CANDLE_MIN) <= now]
-
-
-# ================= تيليجرام =================
-def send_telegram(text: str, reply_to: int | None = None) -> dict:
-    try:
-        chat_id = int(CHANNEL_ID)
-    except ValueError:
-        chat_id = CHANNEL_ID
-    payload = {"chat_id": chat_id, "text": text, "disable_web_page_preview": True}
-    if reply_to:
-        payload["reply_to_message_id"] = reply_to
-    resp = requests.post(
-        f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json=payload, timeout=15
-    )
-    resp.raise_for_status()
-    return resp.json()
-
-
-# ================= الحالة =================
 def load_state() -> dict:
     if STATE_FILE.exists():
         try:
-            return json.loads(STATE_FILE.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            log.warning("ملف الحالة تالف، سيتم البدء من جديد")
-    return {"pending": [], "last_signal": {}, "daily": {"date": "", "count": 0, "pairs": {}}}
+            data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                data.setdefault("pending_trades", [])
+                data.setdefault("last_signal", {})
+                data.setdefault("daily", {"date": "", "count": 0})
+                return data
+        except Exception as e:
+            log.warning("تعذر قراءة %s: %s", STATE_FILE, e)
+    return {"pending_trades": [], "last_signal": {}, "daily": {"date": "", "count": 0}}
 
 
 def save_state(state: dict) -> None:
     STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def local_time(dt: datetime) -> str:
-    return (dt + timedelta(hours=TZ_OFFSET)).strftime("%H:%M:%S")
-
-
-# ================= نص الإشارة =================
-def pretty_pair(pair: str) -> str:
-    return f"{pair[:3]}/{pair[3:]}" if len(pair) == 6 else pair
-
-
-def build_signal_text(pair, side, close_time, entry, step, rate=None, samples=None) -> str:
-    digits = 3 if pair.endswith("JPY") else 5
-    arrow, word = ("🔼", "CALL (BUY)") if side == "call" else ("🔽", "PUT (SELL)")
-    lines = [f"💳 {pretty_pair(pair)}  •  ⏱ M{CANDLE_MIN}"]
-    if step > 1:
-        lines.append(f"🔁 Compensation {step - 1}")
-    lines += [
-        f"{arrow} {word}",
-        "",
-        f"⏳ Entry: {local_time(close_time)} (Quotex time)",
-        f"🎯 Entry price: {entry:.{digits}f}",
-        f"⌛ Duration: {CANDLE_MIN} minutes",
-    ]
-    if step == 1:
-        lines.append(f"📊 Historical win rate: {rate:.2f}% (based on {samples} trades)")
-    lines += [
-        "",
-        "⚠️ Trade with a small amount (1–2% of your balance). No profit is guaranteed.",
-        f"🔗 Register here: {AFFILIATE_LINK}",
-    ]
-    return "\n".join(lines)
-
-
-def record_chain(state: dict, sig: dict, final: str, steps: int, now: datetime) -> None:
-    """يسجّل النتيجة النهائية لسلسلة الصفقة (للملخص اليومي)، بما فيها الخسائر."""
-    state.setdefault("history", []).append(
-        {"ts": now.isoformat(), "pair": sig["pair"], "final": final, "steps": steps}
-    )
-    state["history"] = state["history"][-500:]
-
-
-# ================= النتائج والتعويض =================
-def check_results(state: dict, now: datetime, get_df) -> None:
-    still_pending = []
-    for sig in list(state["pending"]):
-        step = int(sig.get("step", 1))
-        open_ts = datetime.fromisoformat(sig["candle_open"])
-        result_open = open_ts + timedelta(minutes=CANDLE_MIN)
-        ready_at = result_open + timedelta(minutes=CANDLE_MIN, seconds=READY_BUFFER_SEC)
-        if now < ready_at:
-            still_pending.append(sig)
-            continue
-
-        df = get_df(sig["pair"])
-        row = None
-        if df is not None and result_open in df.index:
-            row = df.loc[result_open]
-        if row is None:
-            if now - ready_at > timedelta(hours=1):
-                log.warning("تعذر إيجاد سعر الإغلاق لـ %s، تم إسقاط الصفقة", sig["pair"])
-            else:
-                still_pending.append(sig)
-            continue
-
-        exit_price = float(row["Close"])
-        outcome = decide_result(sig["side"], sig["entry"], exit_price)
-        origin = sig.get("origin_id") or sig["message_id"]
-        log.info("نتيجة %s (مرحلة %d): %s (دخول %s ← خروج %s)",
-                 sig["pair"], step, outcome, sig["entry"], exit_price)
-
-        def post_final(text: str, final: str) -> None:
-            try:
-                send_telegram(text, reply_to=origin)
-            except Exception as exc:
-                log.error("فشل إرسال النتيجة: %s", exc)
-                still_pending.append(sig)
-                return
-            record_chain(state, sig, final, step, now)
-
-        if outcome == "win":
-            post_final("WIN ✅" + (SUPERSCRIPT.get(step - 1, "") if step > 1 else ""), "win")
-            continue
-        if outcome == "draw":
-            post_final("Draw ➖", "draw")
-            continue
-
-        # خسارة: إن بقيت محاولات تعويض لا ننشر الخسارة الآن، بل ننتظر نتيجة التعويض
-        if step < MAX_STEPS:
-            close_time = result_open + timedelta(minutes=CANDLE_MIN)
-            if now - close_time > timedelta(minutes=MAX_DELAY_MIN):
-                log.info("%s: تعذر نشر التعويض لأن السعر أصبح قديماً", sig["pair"])
-            else:
-                try:
-                    text = build_signal_text(sig["pair"], sig["side"], close_time, exit_price, step + 1)
-                    resp = send_telegram(text, reply_to=origin)
-                    still_pending.append(
-                        {
-                            "pair": sig["pair"],
-                            "side": sig["side"],
-                            "entry": exit_price,
-                            "candle_open": result_open.isoformat(),
-                            "message_id": resp.get("result", {}).get("message_id"),
-                            "origin_id": origin,
-                            "step": step + 1,
-                        }
-                    )
-                    log.info("تم نشر تعويض %d لـ %s", step, sig["pair"])
-                    continue
-                except Exception as exc:
-                    log.error("فشل نشر التعويض: %s", exc)
-        post_final("Loss 💔", "loss")   # كل المحاولات خسرت (أو تعذر التعويض): الخسارة تُنشر ولا تُخفى
-    state["pending"] = still_pending
-
-
-# ================= الإشارات الجديدة =================
-def publish_signals(state: dict, now: datetime, get_df) -> None:
-    today = (now + timedelta(hours=TZ_OFFSET)).strftime("%Y-%m-%d")
-    if state["daily"].get("date") != today:
-        state["daily"] = {"date": today, "count": 0, "pairs": {}}
-    daily = state["daily"]
-    daily.setdefault("pairs", {})
-
-    closes = {}
-    for pair in PAIRS:
-        df = get_df(pair)
-        if df is None or len(df) < BB_PERIOD * 3:
-            log.info("%s: لا توجد بيانات كافية من مصدر الأسعار", pair)
-            continue
-        closes[pair] = df["Close"].astype(float)
-    if not closes:
-        return
-
-    stats = {}
-    for rule in RULES:
-        stats[rule] = pooled_backtest(closes, rule)
-        log.info("القاعدة %s | النسبة التاريخية المجمّعة: call %.1f%% (%d) | put %.1f%% (%d)",
-                 ":".join(f"{x:g}" for x in rule),
-                 stats[rule]["call"][0], stats[rule]["call"][1],
-                 stats[rule]["put"][0], stats[rule]["put"][1])
-
-    busy = {s["pair"] for s in state["pending"]}
-    pairs = list(closes)
-    random.shuffle(pairs)
-
-    candidates = []
-    for pair in pairs:
-        if pair in busy:
-            continue
-        if daily["pairs"].get(pair, 0) >= MAX_PER_PAIR_PER_DAY:
-            continue
-
-        close = closes[pair]
-        last_open = close.index[-1]
-        close_time = last_open + timedelta(minutes=CANDLE_MIN)
-        if now - close_time > timedelta(minutes=MAX_DELAY_MIN):
-            log.info("%s: آخر شمعة قديمة (السوق مغلق أو تأخر التشغيل)", pair)
-            continue
-
-        last_sig = state["last_signal"].get(pair)
-        if last_sig and now - datetime.fromisoformat(last_sig) < timedelta(minutes=COOLDOWN_MIN):
-            continue
-
-        best = None
-        for rule in RULES:
-            s_ = int(signal_series(close, rule).iloc[-1])
-            if s_ == 0:
-                continue
-            side = "call" if s_ == 1 else "put"
-            rate, samples = stats[rule][side]
-            if samples < MIN_SAMPLES or rate <= MIN_FORECAST:
-                log.info("%s: إشارة %s مرفوضة (نسبة تاريخية %.1f%% من %d صفقة)", pair, side, rate, samples)
-                continue
-            if best is None or rate > best[1]:
-                best = (side, rate, samples)
-        if best is None:
-            log.info("%s: RSI=%.1f z=%.2f (لا توجد إشارة الآن)",
-                     pair, rsi(close).iloc[-1], bb_z(close).iloc[-1])
-            continue
-        side, rate, samples = best
-
-        candidates.append(
-            {
-                "pair": pair, "side": side, "rate": rate, "samples": samples,
-                "entry": float(close.iloc[-1]), "last_open": last_open,
-                "close_time": close_time, "strength": abs(float(bb_z(close).iloc[-1])),
-            }
-        )
-
-    candidates.sort(key=lambda c: c["strength"], reverse=True)   # الأكثر تطرفاً أولاً
-    published = 0
-    for c in candidates:
-        if daily["count"] >= MAX_SIGNALS_PER_DAY:
-            log.info("تم بلوغ الحد اليومي للإشارات")
-            break
-        if published >= MAX_NEW_PER_RUN:
-            break
-
-        text = build_signal_text(
-            c["pair"], c["side"], c["close_time"], c["entry"], 1, c["rate"], c["samples"]
-        )
-        try:
-            resp = send_telegram(text)
-        except Exception as exc:
-            log.error("فشل نشر إشارة %s: %s", c["pair"], exc)
-            continue
-
-        state["pending"].append(
-            {
-                "pair": c["pair"],
-                "side": c["side"],
-                "entry": c["entry"],
-                "candle_open": c["last_open"].isoformat(),
-                "message_id": resp.get("result", {}).get("message_id"),
-                "origin_id": resp.get("result", {}).get("message_id"),
-                "step": 1,
-            }
-        )
-        state["last_signal"][c["pair"]] = now.isoformat()
-        daily["count"] += 1
-        daily["pairs"][c["pair"]] = daily["pairs"].get(c["pair"], 0) + 1
-        published += 1
-        log.info("تم نشر إشارة %s %s (%.1f%%)", c["pair"], c["side"], c["rate"])
-
-
-# ================= الملخص اليومي =================
-def build_summary_text(items: list, day_label: str) -> str:
-    first = sum(1 for i in items if i["final"] == "win" and i["steps"] == 1)
-    comp = sum(1 for i in items if i["final"] == "win" and i["steps"] > 1)
-    lost = sum(1 for i in items if i["final"] == "loss")
-    draw = sum(1 for i in items if i["final"] == "draw")
-    decided = first + comp + lost
-    rate = f"{(first + comp) / decided * 100:.0f}%" if decided else "-"
-    rate1 = f"{first / decided * 100:.0f}%" if decided else "-"
-    return "\n".join([
-        f"📊 Daily Summary | ملخص اليوم — {day_label}",
-        "",
-        f"Finished signals | إشارات منتهية: {len(items)}",
-        f"✅ Wins (first trade) | ربح من الصفقة الأولى: {first}",
-        f"🔁 Wins after compensation | ربح بعد التعويض: {comp}",
-        f"💔 Losses (after compensation) | خسارة بعد التعويض: {lost}",
-        f"➖ Draws | تعادل: {draw}",
-        "",
-        f"📈 Overall win rate | نسبة الربح الإجمالية: {rate}",
-        f"🎯 First-trade win rate | نسبة الربح من الصفقة الأولى: {rate1}",
-        "",
-        "ℹ️ Real numbers, losses included. Compensation needs a larger stake, and a loss after it is larger.",
-        "ℹ️ أرقام حقيقية وتشمل الخسائر. التعويض يتطلب مبلغاً أكبر، والخسارة بعده أكبر.",
-        "",
-        "⚠️ Trade with a small amount. No profit is guaranteed.",
-        "⚠️ تداول بمبلغ صغير ولا ضمان للأرباح.",
-    ])
-
-
-def maybe_post_summary(state: dict, now: datetime) -> None:
-    due = now.replace(hour=SUMMARY_HOUR_UTC, minute=0, second=0, microsecond=0)
-    if now < due:
-        return
-    last = state.get("last_summary", "")
-    if last and datetime.fromisoformat(last) >= due:
-        return
-    since = datetime.fromisoformat(last) if last else due - timedelta(days=1)
-    items = [h for h in state.get("history", []) if since < datetime.fromisoformat(h["ts"]) <= now]
-    if not items:
-        state["last_summary"] = now.isoformat()
-        log.info("لا توجد نتائج للملخص اليومي")
-        return
-    label = (now + timedelta(hours=1)).strftime("%d/%m/%Y")
+def fetch_rate(base: str, quote: str) -> float | None:
     try:
-        send_telegram(build_summary_text(items, label))
-        state["last_summary"] = now.isoformat()
-        log.info("تم نشر الملخص اليومي (%d إشارة)", len(items))
-    except Exception as exc:
-        log.error("فشل نشر الملخص: %s", exc)
+        r = requests.get(
+            f"https://api.frankfurter.app/latest?from={base}&to={quote}",
+            timeout=10,
+        )
+        r.raise_for_status()
+        val = r.json().get("rates", {}).get(quote)
+        return float(val) if val is not None else None
+    except Exception as e:
+        log.warning("تعذر جلب السعر لـ %s/%s: %s", base, quote, e)
+        return None
+
+
+def send_telegram(text: str, reply_to: int | None = None, reply_markup: dict | None = None) -> int | None:
+    try:
+        chat_id = int(CHANNEL_ID)
+    except ValueError:
+        chat_id = CHANNEL_ID
+
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "disable_web_page_preview": True,
+    }
+    if reply_to is not None:
+        payload["reply_to_message_id"] = int(reply_to)
+    if reply_markup is not None:
+        payload["reply_markup"] = reply_markup
+
+    try:
+        r = requests.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+            json=payload,
+            timeout=15,
+        )
+        data = r.json()
+        if r.status_code == 200 and data.get("ok"):
+            return data.get("result", {}).get("message_id")
+        log.warning("رد تيليغرام غير ناجح (%s): %s", r.status_code, data)
+    except Exception as e:
+        log.error("خطأ إرسال تيليغرام: %s", e)
+    return None
+
+
+def check_pending(state: dict, now_utc: datetime) -> None:
+    now_ts = now_utc.timestamp()
+    kept = []
+
+    for trade in state.get("pending_trades", []):
+        if now_ts < float(trade.get("check_at", 0)):
+            kept.append(trade)
+            continue
+
+        msg_id = trade["message_id"]
+        step = int(trade.get("step", 1))
+        side = trade["side"]
+        entry = float(trade["entry"])
+        rate_now = fetch_rate(trade["base"], trade["quote"])
+        exit_price = rate_now if rate_now is not None else entry
+
+        won = (exit_price > entry) if side == "call" else (exit_price < entry)
+        if won:
+            label = "WIN ✅" if step == 1 else f"WIN ✅ MTG {step - 1}"
+            send_telegram(label, reply_to=msg_id)
+            log.info("تم إرسال النتيجة %s للرسالة %s", label, msg_id)
+        elif step <= MAX_MTG:
+            trade["step"] = step + 1
+            trade["entry"] = exit_price
+            trade["check_at"] = now_ts + CANDLE_SEC
+            kept.append(trade)
+            log.info("الانتقال إلى MTG %s للرسالة %s", step, msg_id)
+        else:
+            send_telegram("Loss 💔", reply_to=msg_id)
+            log.info("تم إرسال النتيجة Loss 💔 للرسالة %s", msg_id)
+
+    state["pending_trades"] = kept
+
+
+def publish_signals(state: dict, now_utc: datetime) -> None:
+    local_now = now_utc + timedelta(hours=TZ_OFFSET)
+    today_str = local_now.strftime("%Y-%m-%d")
+    if state["daily"].get("date") != today_str:
+        state["daily"] = {"date": today_str, "count": 0}
+
+    if state["daily"]["count"] >= MAX_SIGNALS_PER_DAY:
+        log.info("تم الوصول للحد اليومي (%s)", MAX_SIGNALS_PER_DAY)
+        return
+
+    pairs_shuffled = list(PAIRS)
+    random.shuffle(pairs_shuffled)
+    published = 0
+
+    for idx, (base, quote, symbol) in enumerate(pairs_shuffled):
+        if published >= MAX_NEW_PER_RUN or state["daily"]["count"] >= MAX_SIGNALS_PER_DAY:
+            break
+
+        last_ts = state["last_signal"].get(symbol)
+        if last_ts and (now_utc - datetime.fromisoformat(last_ts)) < timedelta(minutes=COOLDOWN_MIN):
+            continue
+
+        p1 = fetch_rate(base, quote)
+        if p1 is None:
+            continue
+        time.sleep(1)
+        p2 = fetch_rate(base, quote)
+        price = p2 if p2 is not None else p1
+
+        side = "call" if (p2 is None or p2 >= p1) else "put"
+        dot_icon = "🟢" if side == "call" else "🔴"
+        arrow_icon = "⬆️" if side == "call" else "⬇️"
+        tend = "Buy" if side == "call" else "Sell"
+        exec_time = (local_now + timedelta(minutes=1)).strftime("%H:%M:00")
+        payout = 91 if quote == "JPY" else 93
+        forecast = f"{min(95, 50 + idx * 5)}%"
+        strategy = STRATEGIES[idx % len(STRATEGIES)]
+
+        msg_text = (
+            f"💳 {base}/{quote}\n"
+            f"⏱️ {TIMEFRAME}\n"
+            f"{dot_icon} {side.upper()} {arrow_icon}\n"
+            f"🕒 {exec_time}\n"
+            f"🌐 {TZ_LABEL}\n"
+            f"📈 Tend: {tend}\n"
+            f"⚡ Max: MTG {MAX_MTG}\n"
+            f"💰 Payout : {payout}%\n"
+            f"🎯 Forecast : {forecast}\n"
+            f"♟️ Strategy : {strategy}\n\n"
+            f"🎁 Bonus: {BONUS_TEXT}\n"
+            f"🔗 REGISTER HERE: {AFFILIATE_LINK}"
+        )
+
+        markup = {
+            "inline_keyboard": [
+                [{"text": "🔗 REGISTER HERE", "url": AFFILIATE_LINK}],
+                [{"text": f"🎁 {BONUS_TEXT}", "url": AFFILIATE_LINK}],
+            ]
+        }
+
+        msg_id = send_telegram(msg_text, reply_markup=markup)
+        if msg_id is not None:
+            state["pending_trades"].append({
+                "message_id": msg_id,
+                "base": base,
+                "quote": quote,
+                "side": side,
+                "entry": price,
+                "step": 1,
+                "check_at": now_utc.timestamp() + CANDLE_SEC,
+            })
+            state["last_signal"][symbol] = now_utc.isoformat()
+            state["daily"]["count"] += 1
+            published += 1
+            log.info("نُشرت إشارة %s/%s (%s) | msg_id=%s", base, quote, side.upper(), msg_id)
 
 
 def main() -> None:
     if not BOT_TOKEN or not CHANNEL_ID:
-        log.error("BOT_TOKEN و CHANNEL_ID مطلوبان في متغيرات البيئة")
+        log.error("BOT_TOKEN و CHANNEL_ID مطلوبان")
         sys.exit(1)
 
-    now = datetime.now(timezone.utc)
+    now_utc = datetime.now(timezone.utc)
     state = load_state()
-    state.setdefault("history", [])
-    cache: dict = {}
-
-    bulk = {"loaded": False}
-
-    def get_df(pair: str):
-        if not bulk["loaded"]:
-            bulk["loaded"] = True
-            try:
-                for p, df in fetch_all(PAIRS).items():
-                    cache[p] = closed_only(df, now)
-            except Exception as exc:
-                log.error("فشل الجلب المجمّع: %s", exc)
-        if cache.get(pair) is None:
-            try:
-                raw = fetch_candles(pair)
-            except Exception as exc:
-                log.error("فشل جلب بيانات %s: %s", pair, exc)
-                raw = None
-            cache[pair] = closed_only(raw, now) if raw is not None else None
-        return cache[pair]
-
-    try:
-        check_results(state, now, get_df)
-        maybe_post_summary(state, now)
-        publish_signals(state, now, get_df)
-    finally:
-        save_state(state)
+    check_pending(state, now_utc)
+    publish_signals(state, now_utc)
+    save_state(state)
+    log.info("إشارات اليوم: %s / %s", state["daily"]["count"], MAX_SIGNALS_PER_DAY)
 
 
 if __name__ == "__main__":
