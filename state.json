@@ -27,28 +27,9 @@
     "EURCHF": "2026-11-27T21:35:30.012155+00:00"
   },
   "daily": {
-    "date": "2026-11-27",
-    "count": 25,
-    "pairs": {
-      "EURAUD": 1,
-      "EURGBP": 2,
-      "AUDCHF": 2,
-      "AUDJPY": 2,
-      "GBPCHF": 1,
-      "CADCHF": 1,
-      "NZDUSD": 1,
-      "AUDUSD": 1,
-      "EURUSD": 1,
-      "GBPUSD": 1,
-      "NZDJPY": 2,
-      "AUDCAD": 2,
-      "NZDCAD": 2,
-      "EURJPY": 1,
-      "AUDNZD": 1,
-      "EURCAD": 2,
-      "EURCHF": 1,
-      "GBPNZD": 1
-    }
+    "date": "2026-11-28",
+    "count": 0,
+    "pairs": {}
   },
   "history": [
     {
